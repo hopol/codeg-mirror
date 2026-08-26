@@ -3481,7 +3481,11 @@
       "hunkLabel": "區塊 {index}",
       "loadingHunk": "正在載入區塊...",
       "noDiffData": "無差異資料",
-      "showRemainingLines": "顯示剩餘 {count} 行"
+      "showRemainingLines": "顯示剩餘 {count} 行",
+      "viewMode": {
+        "split": "切換為左右分欄視圖",
+        "unified": "切換為內聯視圖"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "工作資料夾",
@@ -4772,6 +4776,8 @@
     "detailDescription": "任務詳情",
     "detailSummary": "結果",
     "detailFiles": "變更檔案",
+    "detailFilesIncludesPr": "含 PR 自身的變更",
+    "detailFilesIncludesMr": "含 MR 自身的變更",
     "detailDiffAll": "檢視全部差異",
     "detailDiffAllTitle": "全部差異",
     "detailNoChanges": "相對基準還沒有變更",
@@ -4822,6 +4828,7 @@
     "deliverPrTitleLabel": "PR 標題",
     "deliverPrTitleLabelMr": "合併請求標題",
     "deliverPrDraft": "建立為草稿",
+    "deliverPrDeleteWorktree": "交付後刪除 worktree",
     "deliverPrSubmit": "推送並建立",
     "deliverPrSubmitting": "推送中…",
     "deliverPrDone": "PR 已建立",
@@ -4831,6 +4838,7 @@
     "deliverPrBackTitleMr": "推回該合併請求",
     "deliverPrBackDescription": "把這個任務的提交推到 {repo}#{number} 的頭分支 {branch}。不會新建任何東西——工作直接進入已經存在的那個審查。",
     "deliverPrBackDescriptionMr": "把這個任務的提交推到 {repo}!{number} 的來源分支 {branch}。不會新建任何東西——工作直接進入已經存在的那個審查。",
+    "deliverPrBackDeleteWorktree": "推回後刪除 worktree",
     "deliverPrBackSubmit": "推送",
     "deliverPrBackDone": "已推回 PR",
     "deliverPrBackDoneMr": "已推回合併請求"

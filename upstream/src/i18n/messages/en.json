@@ -3481,7 +3481,11 @@
       "hunkLabel": "Hunk {index}",
       "loadingHunk": "Loading hunk...",
       "noDiffData": "No diff data",
-      "showRemainingLines": "Show {count} more lines"
+      "showRemainingLines": "Show {count} more lines",
+      "viewMode": {
+        "split": "Switch to side-by-side view",
+        "unified": "Switch to inline view"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Working folder",
@@ -4772,6 +4776,8 @@
     "detailDescription": "Task detail",
     "detailSummary": "Result",
     "detailFiles": "Changed files",
+    "detailFilesIncludesPr": "incl. the pull request's own changes",
+    "detailFilesIncludesMr": "incl. the merge request's own changes",
     "detailDiffAll": "View full diff",
     "detailDiffAllTitle": "Full diff",
     "detailNoChanges": "No changes vs the base yet",
@@ -4822,6 +4828,7 @@
     "deliverPrTitleLabel": "Pull request title",
     "deliverPrTitleLabelMr": "Merge request title",
     "deliverPrDraft": "Open as a draft",
+    "deliverPrDeleteWorktree": "Delete the worktree after delivering",
     "deliverPrSubmit": "Push and open",
     "deliverPrSubmitting": "Pushing…",
     "deliverPrDone": "Pull request opened",
@@ -4831,6 +4838,7 @@
     "deliverPrBackTitleMr": "Deliver back to the merge request",
     "deliverPrBackDescription": "Pushes this task's commits onto {branch}, the head branch of {repo}#{number}. Nothing new is opened — the review that is already there receives the work.",
     "deliverPrBackDescriptionMr": "Pushes this task's commits onto {branch}, the source branch of {repo}!{number}. Nothing new is opened — the review that is already there receives the work.",
+    "deliverPrBackDeleteWorktree": "Delete the worktree after pushing",
     "deliverPrBackSubmit": "Push",
     "deliverPrBackDone": "Pushed to the pull request",
     "deliverPrBackDoneMr": "Pushed to the merge request"

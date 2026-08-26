@@ -3481,7 +3481,11 @@
       "hunkLabel": "Bloc {index}",
       "loadingHunk": "Chargement du hunk...",
       "noDiffData": "Aucune donnée diff",
-      "showRemainingLines": "Afficher {count} lignes de plus"
+      "showRemainingLines": "Afficher {count} lignes de plus",
+      "viewMode": {
+        "split": "Passer à la vue côte à côte",
+        "unified": "Passer à la vue en ligne"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "Dossier de travail",
@@ -4772,6 +4776,8 @@
     "detailDescription": "Détail de la tâche",
     "detailSummary": "Résultat",
     "detailFiles": "Fichiers modifiés",
+    "detailFilesIncludesPr": "y compris les modifications de la pull request elle-même",
+    "detailFilesIncludesMr": "y compris les modifications de la merge request elle-même",
     "detailDiffAll": "Voir tout le diff",
     "detailDiffAllTitle": "Diff complet",
     "detailNoChanges": "Aucun changement par rapport à la base",
@@ -4822,6 +4828,7 @@
     "deliverPrTitleLabel": "Titre de la pull request",
     "deliverPrTitleLabelMr": "Titre de la merge request",
     "deliverPrDraft": "Ouvrir en brouillon",
+    "deliverPrDeleteWorktree": "Supprimer le worktree après la livraison",
     "deliverPrSubmit": "Pousser et ouvrir",
     "deliverPrSubmitting": "Envoi…",
     "deliverPrDone": "Pull request ouverte",
@@ -4831,6 +4838,7 @@
     "deliverPrBackTitleMr": "Renvoyer vers la merge request",
     "deliverPrBackDescription": "Pousse les commits de cette tâche sur {branch}, la branche principale de {repo}#{number}. Rien de nouveau n'est ouvert : la revue déjà en cours reçoit le travail.",
     "deliverPrBackDescriptionMr": "Pousse les commits de cette tâche sur {branch}, la branche source de {repo}!{number}. Rien de nouveau n'est ouvert : la revue déjà en cours reçoit le travail.",
+    "deliverPrBackDeleteWorktree": "Supprimer le worktree après le push",
     "deliverPrBackSubmit": "Pousser",
     "deliverPrBackDone": "Poussé vers la pull request",
     "deliverPrBackDoneMr": "Poussé vers la merge request"

@@ -3481,7 +3481,11 @@
       "hunkLabel": "مقطع {index}",
       "loadingHunk": "جارٍ تحميل hunk...",
       "noDiffData": "لا توجد بيانات diff",
-      "showRemainingLines": "عرض {count} سطر إضافي"
+      "showRemainingLines": "عرض {count} سطر إضافي",
+      "viewMode": {
+        "split": "التبديل إلى العرض جنباً إلى جنب",
+        "unified": "التبديل إلى العرض المضمّن"
+      }
     },
     "conversationContextBar": {
       "folderTitle": "مجلد العمل",
@@ -4772,6 +4776,8 @@
     "detailDescription": "تفاصيل المهمة",
     "detailSummary": "النتيجة",
     "detailFiles": "الملفات المتغيرة",
+    "detailFilesIncludesPr": "يشمل تغييرات طلب السحب نفسه",
+    "detailFilesIncludesMr": "يشمل تغييرات طلب الدمج نفسه",
     "detailDiffAll": "عرض كامل الفروق",
     "detailDiffAllTitle": "كامل الفروق",
     "detailNoChanges": "لا تغييرات بعد مقارنةً بالأساس",
@@ -4822,6 +4828,7 @@
     "deliverPrTitleLabel": "عنوان طلب السحب",
     "deliverPrTitleLabelMr": "عنوان طلب الدمج",
     "deliverPrDraft": "الفتح كمسودة",
+    "deliverPrDeleteWorktree": "حذف worktree بعد التسليم",
     "deliverPrSubmit": "الدفع والفتح",
     "deliverPrSubmitting": "جارٍ الدفع…",
     "deliverPrDone": "تم فتح طلب السحب",
@@ -4831,6 +4838,7 @@
     "deliverPrBackTitleMr": "الإعادة إلى طلب الدمج",
     "deliverPrBackDescription": "يدفع إيداعات هذه المهمة إلى {branch}، فرع رأس {repo}#{number}. لا يُفتح شيء جديد — المراجعة القائمة هي التي تستلم العمل.",
     "deliverPrBackDescriptionMr": "يدفع إيداعات هذه المهمة إلى {branch}، الفرع المصدر لـ {repo}!{number}. لا يُفتح شيء جديد — المراجعة القائمة هي التي تستلم العمل.",
+    "deliverPrBackDeleteWorktree": "حذف worktree بعد الدفع",
     "deliverPrBackSubmit": "ادفع",
     "deliverPrBackDone": "تم الدفع إلى طلب السحب",
     "deliverPrBackDoneMr": "تم الدفع إلى طلب الدمج"
