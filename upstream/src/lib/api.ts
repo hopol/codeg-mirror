@@ -6,7 +6,11 @@ import {
   isRemoteDesktopMode,
   notifyRemoteDesktopUnauthorized,
 } from "./transport"
-import { getCodegToken } from "./transport/web-auth"
+import {
+  codegAuthHeaders,
+  getCodegToken,
+  unauthorizedSource,
+} from "./transport/web-auth"
 import { notifyWebUnauthorized } from "./transport/web-connection-store"
 import { getCurrentEffectiveAppLocale } from "./i18n"
 import {
@@ -21,8 +25,13 @@ import type {
   LeakedTempReclaim,
   LeakedTempScan,
   AgentType,
+  CliAccessStatus,
+  CliToolStatus,
   AgentDelegationDefaults,
   AgentOptionsSnapshot,
+  AssistantDraft,
+  AssistantInfo,
+  AssistantPatch,
   Automation,
   AutomationRun,
   AutomationDraft,
@@ -134,6 +143,8 @@ import type {
   GitResetMode,
   GitConflictFileVersions,
   GitCommitResult,
+  CommitMessageSettings,
+  GeneratedCommitMessage,
   GitRemote,
   GitStashEntry,
   PreflightResult,
@@ -2337,6 +2348,38 @@ export async function setFolderGroup(
   return getTransport().call("set_folder_group", { folderId, groupId })
 }
 
+/** Every assistant, tombstones included, in display order. */
+export async function assistantList(): Promise<AssistantInfo[]> {
+  return getTransport().call("assistant_list", {})
+}
+
+export async function assistantCreate(
+  draft: AssistantDraft
+): Promise<AssistantInfo> {
+  return getTransport().call("assistant_create", { draft })
+}
+
+/** Apply an edit; only the fields present change. */
+export async function assistantUpdate(
+  id: number,
+  patch: AssistantPatch
+): Promise<AssistantInfo> {
+  return getTransport().call("assistant_update", { id, patch })
+}
+
+/** Soft-delete; resolves to the tombstone. */
+export async function assistantDelete(id: number): Promise<AssistantInfo> {
+  return getTransport().call("assistant_delete", { id })
+}
+
+/** Persist the order after a drag (the complete list, first to last);
+ *  resolves to the rows whose position changed. */
+export async function assistantReorder(
+  ids: number[]
+): Promise<AssistantInfo[]> {
+  return getTransport().call("assistant_reorder", { ids })
+}
+
 export async function listConversationTags(): Promise<ConversationTagDetail[]> {
   return getTransport().call("list_conversation_tags", {})
 }
@@ -3062,6 +3105,71 @@ export async function gitCommit(
     files,
     folderId: folderId ?? null,
   })
+}
+
+/**
+ * Have an agent write a message for the commit `gitCommit(path, …, files)`
+ * would make. Runs as long as the agent takes — there is no deadline on the
+ * backend — so the call waits well past the transport defaults (60 s on web,
+ * 30 s through the remote-desktop proxy); stop it with
+ * `gitGenerateCommitMessageCancel(requestId)`.
+ */
+export async function gitGenerateCommitMessage(params: {
+  requestId: string
+  path: string
+  folderId: number | null
+  files: string[]
+  draft: string | null
+  fallbackAgent: AgentType | null
+}): Promise<GeneratedCommitMessage> {
+  return getTransport().call(
+    "git_generate_commit_message",
+    {
+      requestId: params.requestId,
+      path: params.path,
+      folderId: params.folderId,
+      files: params.files,
+      draft: params.draft,
+      fallbackAgent: params.fallbackAgent,
+    },
+    { timeoutMs: 30 * 60_000 }
+  )
+}
+
+/** Stop the generation started under `requestId` (a no-op once it ended). */
+export async function gitGenerateCommitMessageCancel(
+  requestId: string
+): Promise<void> {
+  return getTransport().call("git_generate_commit_message_cancel", {
+    requestId,
+  })
+}
+
+/** A project folder's own settings — `null` while it follows the global ones
+ *  — or with `folderId` null the global settings. */
+export async function getCommitMessageSettings(
+  folderId: number | null
+): Promise<CommitMessageSettings | null> {
+  return getTransport().call("get_commit_message_settings", { folderId })
+}
+
+/** Save a project folder's own settings, or with `folderId` null the global
+ *  ones. */
+export async function setCommitMessageSettings(
+  folderId: number | null,
+  settings: CommitMessageSettings
+): Promise<CommitMessageSettings> {
+  return getTransport().call("set_commit_message_settings", {
+    folderId,
+    settings,
+  })
+}
+
+/** Drop a project folder's own settings: it follows the global ones again. */
+export async function deleteCommitMessageSettings(
+  folderId: number
+): Promise<void> {
+  return getTransport().call("delete_commit_message_settings", { folderId })
 }
 
 export async function gitRollbackFile(
@@ -4058,6 +4166,16 @@ export async function workTaskArchive(
   return getTransport().call("work_task_archive", { id, archived })
 }
 
+/** Put a reviewed / failed task aside to handle later ("以后处理" — it waits
+ *  under Done), or bring it back to "needs you". No status change: a follow-up,
+ *  retry or merge picks a deferred task back up on its own. */
+export async function workTaskDefer(
+  id: number,
+  deferred: boolean
+): Promise<void> {
+  return getTransport().call("work_task_defer", { id, deferred })
+}
+
 /** Remove the task's worktree + branch (also retries a failed cleanup). */
 export async function workTaskCleanup(id: number): Promise<void> {
   return getTransport().call("work_task_cleanup", { id })
@@ -4276,11 +4394,13 @@ export async function uploadAttachment(
 
   const res = await fetch(`${window.location.origin}/api/upload_attachment`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
+    headers: codegAuthHeaders(token),
     body: form,
   })
   if (res.status === 401) {
-    notifyWebUnauthorized()
+    notifyWebUnauthorized(
+      unauthorizedSource(res.headers.get("www-authenticate"))
+    )
     throw new Error("Unauthorized")
   }
   if (!res.ok) {
@@ -4370,9 +4490,7 @@ async function workspaceFileFetch(
   isMultipart: boolean
 ): Promise<Response> {
   const token = getCodegToken()
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${token}`,
-  }
+  const headers = codegAuthHeaders(token)
   if (!isMultipart) {
     headers["Content-Type"] = "application/json"
   }
@@ -4382,7 +4500,9 @@ async function workspaceFileFetch(
     body,
   })
   if (res.status === 401) {
-    notifyWebUnauthorized()
+    notifyWebUnauthorized(
+      unauthorizedSource(res.headers.get("www-authenticate"))
+    )
     throw new Error("Unauthorized")
   }
   if (!res.ok) {
@@ -4440,7 +4560,9 @@ export async function uploadWorkspaceFile(
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${window.location.origin}/api/upload_workspace_file`)
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    for (const [name, value] of Object.entries(codegAuthHeaders(token))) {
+      xhr.setRequestHeader(name, value)
+    }
 
     if (args.onProgress) {
       const onProgress = args.onProgress
@@ -4453,7 +4575,9 @@ export async function uploadWorkspaceFile(
 
     xhr.onload = () => {
       if (xhr.status === 401) {
-        notifyWebUnauthorized()
+        notifyWebUnauthorized(
+          unauthorizedSource(xhr.getResponseHeader("www-authenticate"))
+        )
         reject(new Error("Unauthorized"))
         return
       }
@@ -5061,6 +5185,30 @@ export interface WebServiceConfig {
 
 export async function getWebServiceConfig(): Promise<WebServiceConfig> {
   return getTransport().call("get_web_service_config")
+}
+
+/** Whether `codeg-cli` on this machine can reach this runtime. */
+export async function getCliAccessStatus(): Promise<CliAccessStatus> {
+  return getTransport().call("cli_access_status")
+}
+
+/** Turn command-line access on or off; applied at once. */
+export async function setCliAccessEnabled(
+  enabled: boolean
+): Promise<CliAccessStatus> {
+  return getTransport().call("cli_access_set_enabled", { enabled })
+}
+
+/** Desktop only: whether this app's `codeg-cli` is on the user's PATH. Asked
+ *  of this window's own app, even one bound to a remote server. */
+export async function getCliToolStatus(): Promise<CliToolStatus> {
+  return getShellTransport().call("cli_tool_status")
+}
+
+/** Desktop only: put this app's `codeg-cli` on the user's PATH. On macOS
+ *  this may ask for an administrator's password. */
+export async function installCliTool(): Promise<CliToolStatus> {
+  return getShellTransport().call("cli_tool_install")
 }
 
 export async function updateWebServiceConfig(
@@ -5755,7 +5903,9 @@ export async function uploadBackupWeb(
     const token = getCodegToken()
     const xhr = new XMLHttpRequest()
     xhr.open("POST", `${window.location.origin}/api/backup_upload`)
-    xhr.setRequestHeader("Authorization", `Bearer ${token}`)
+    for (const [name, value] of Object.entries(codegAuthHeaders(token))) {
+      xhr.setRequestHeader(name, value)
+    }
     if (onProgress) {
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) onProgress(event.loaded, event.total)
@@ -5763,7 +5913,9 @@ export async function uploadBackupWeb(
     }
     xhr.onload = () => {
       if (xhr.status === 401) {
-        notifyWebUnauthorized()
+        notifyWebUnauthorized(
+          unauthorizedSource(xhr.getResponseHeader("www-authenticate"))
+        )
         reject(new Error("Unauthorized"))
         return
       }

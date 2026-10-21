@@ -249,6 +249,21 @@
     "autostartDescription": "Startet automatisch, nachdem Sie sich an diesem Computer angemeldet haben.",
     "autostartSaveFailed": "Autostart-Einstellungen konnten nicht gespeichert werden: {message}",
     "autostartUnavailable": "Der Autostart-Eintrag dieses Computers konnte nicht gelesen werden: {message}",
+    "cliAccessTitle": "Befehlszeilenzugriff",
+    "cliAccessDescription": "Erlaubt dem Befehl codeg-cli auf diesem Computer, Prompts über Codeg auszuführen – aus Skripten, CI-Jobs oder Codegs eigenen Terminals. Nur dieser Computer kann sich verbinden, mit einem Schlüssel in einer privaten Datei.",
+    "cliAccessEndpointFile": "Endpunktdatei:",
+    "cliAccessExample": "Beispiel:",
+    "cliAccessOff": "Aus: codeg-cli auf diesem Computer kann Codeg nicht erreichen.",
+    "cliAccessUnavailable": "Der Befehlszeilenzugriff konnte nicht starten: {message}",
+    "cliAccessSaveFailed": "Der Befehlszeilenzugriff konnte nicht geändert werden: {message}",
+    "cliToolInstall": "Kommandozeilenwerkzeug installieren",
+    "cliToolInstalled": "{command} ist in deinem PATH:",
+    "cliToolPackage": "{command} kam mit dem Paket und ist in deinem PATH:",
+    "cliToolNotInstalled": "Lege {command} in deinen PATH, damit ein Terminal außerhalb von Codeg es findet.",
+    "cliToolConflict": "Unverändert gelassen: {message}",
+    "cliToolNote": "Hinweis: {message}",
+    "cliToolInstalledToast": "{command} ist in deinem PATH. Öffne ein neues Terminal, um es zu nutzen.",
+    "cliToolInstallFailed": "Das Kommandozeilenwerkzeug konnte nicht installiert werden: {message}",
     "proxyTitle": "Netzwerk-Proxy",
     "proxyDescription": "Wenn aktiviert, werden nachfolgende Netzwerkanfragen bevorzugt über diesen Proxy ausgeführt (einschließlich ACP-Chat, Agent-Installation und Git-Remote-Operationen).",
     "loadFailed": "Laden fehlgeschlagen: {message}",
@@ -762,13 +777,105 @@
       "tabGeneral": "Allgemein",
       "tabAgentDefaults": "Subagent-Standards",
       "agentDefaultsDescription": "Pro-Agent-Überschreibungen, die angewendet werden, wenn die Multi-Agent-Zusammenarbeit einen Subagenten für einen Delegationsaufruf startet. Die hier gezeigten Optionen stammen aus einer Live-Abfrage – Ihre Auswahl ist exakt das, was der Agent akzeptiert.",
+      "agentDefaultsAgentHint": "Optionen auf Standard behalten den eigenen Wert des Agenten.",
+      "agentDefaultsDelegationOff": "Multi-Agent-Zusammenarbeit ist aus. Schalte sie ein, um diese Standards zu bearbeiten.",
       "probing": "Verfügbare Optionen vom Agenten werden geladen…",
       "probeFailed": "Optionen konnten nicht geladen werden: {detail}",
       "retry": "Erneut versuchen",
       "noConfigAvailable": "Dieser Agent hat keine konfigurierbaren Optionen.",
       "modeLabel": "Modus",
       "agentDefaultHint": "Agent-Standard: {value}",
-      "defaultOptionLabel": "Standard ({value})"
+      "defaultOptionLabel": "Standard ({value})",
+      "overrideCount": "{count, plural, one {# Überschreibung} other {# Überschreibungen}}",
+      "tabAssistants": "Assistenten",
+      "booleanOn": "An",
+      "booleanOff": "Aus",
+      "modelNotSwitched": "Der Agent hat nicht zum gewählten Modell gewechselt; diese Optionen gehören möglicherweise zu einem anderen Modell.",
+      "unsavedChanges": "Ungespeicherte Änderungen",
+      "assistants": {
+        "description": "Assistenten sind Delegations-Vorlagen, die du per @ erwähnen kannst: ein Agent mit allen gewählten Optionen und dauerhaften Anweisungen. Eine Delegation an einen Assistenten läuft genau so.",
+        "create": "Neuer Assistent",
+        "delegationOff": "Multi-Agenten-Zusammenarbeit ist aus; an Assistenten kann derzeit nicht delegiert werden.",
+        "delegationOffAction": "Zu {tab} wechseln",
+        "unsavedElsewhere": "{tabs} hat ungespeicherte Änderungen.",
+        "unsavedGoBack": "Zurück",
+        "loadFailed": "Assistenten konnten nicht geladen werden: {detail}",
+        "emptyTitle": "Noch keine Assistenten",
+        "empty": "Lege einen an, um einem Agenten eine feste Einrichtung und dauerhafte Anweisungen zu geben, die du in jedem Gespräch per @ erwähnen kannst.",
+        "reorderFailed": "Assistenten konnten nicht neu angeordnet werden",
+        "saveFailed": "Assistent konnte nicht gespeichert werden",
+        "duplicated": "{name} angelegt",
+        "deleteFailed": "Assistent konnte nicht gelöscht werden",
+        "deleteTitle": "{name} löschen?",
+        "deleteDescription": "Er verschwindet aus den Einstellungen und dem Erwähnungsfeld und kann nicht mehr beauftragt werden. Bereits vorhandene Delegationskarten in Gesprächen zeigen ihn weiterhin.",
+        "cancel": "Abbrechen",
+        "delete": "Löschen",
+        "duplicate": "Duplizieren",
+        "move": "{name} verschieben",
+        "enableAssistant": "{name} aktivieren",
+        "edit": "{name} bearbeiten",
+        "more": "Weitere Aktionen für {name}",
+        "agentNotInstalled": "nicht installiert",
+        "agentDisabled": "deaktiviert",
+        "createTitle": "Neuer Assistent",
+        "editTitle": "Assistent bearbeiten",
+        "editorDescription": "Eine Delegation an diesen Assistenten läuft genau mit dem Agenten, den Optionen und den dauerhaften Anweisungen, die du hier festlegst.",
+        "nameLabel": "Name",
+        "namePlaceholder": "z. B. Code-Reviewer",
+        "descriptionLabel": "Beschreibung",
+        "descriptionPlaceholder": "Wann dieser Assistent passt",
+        "descriptionHint": "Erscheint im Erwähnungsfeld und sagt dem delegierenden Agenten, wann er diesen Assistenten wählen soll.",
+        "agentLabel": "Agent",
+        "agentPlaceholder": "Agent wählen",
+        "agentHint": "Jede seiner Optionen muss gewählt werden.",
+        "instructionsLabel": "Dauerhafte Anweisungen",
+        "instructionsPlaceholder": "Rolle und Arbeitsregeln, die dieser Assistent bei jeder Aufgabe befolgt",
+        "instructionsHint": "Wird dem Agenten mit jeder delegierten Aufgabe übergeben. Erscheint nicht in den Nachrichten der Untersitzung.",
+        "charCount": "{count} / {max}",
+        "save": "Speichern",
+        "createSubmit": "Erstellen",
+        "pickAgentFirst": "Wähle einen Agenten, um seine Optionen zu sehen.",
+        "pickModelFirst": "Wähle ein Modell, um die übrigen Optionen zu sehen.",
+        "modelNotSwitched": "Der Agent hat nicht zu diesem Modell gewechselt, daher lassen sich seine übrigen Optionen nicht lesen. Versuche es erneut oder wähle ein anderes Modell.",
+        "agentUnavailableHint": "Dieser Agent ist deaktiviert oder nicht installiert, daher lassen sich seine Optionen nicht prüfen. Unten stehen die gespeicherten; wähle einen anderen Agenten, um sie zu ändern.",
+        "optionsChanged": "{count, plural, one {Die Optionen des Agenten haben sich seit dem Speichern geändert – wähle die markierte Option.} other {Die Optionen des Agenten haben sich seit dem Speichern geändert – wähle die # markierten Optionen.}}",
+        "missingCount": "{count, plural, one {Noch # Option zu wählen} other {Noch # Optionen zu wählen}}",
+        "cannotSaveProbeFailed": "Speichern nicht möglich: Die Optionen des Agenten ließen sich nicht laden und daher nicht prüfen. Versuche es zuerst erneut.",
+        "cannotSaveModelNotSwitched": "Speichern nicht möglich: Der Agent hat nicht zum gewählten Modell gewechselt. Versuche es erneut oder wähle ein anderes Modell.",
+        "cannotSaveStillLoading": "Optionen des Agenten werden noch gelesen…",
+        "savedOptions": "Gespeicherte Optionen",
+        "savedNoOptions": "Für diesen Agenten wurden keine Optionen gespeichert.",
+        "required": "Pflicht",
+        "selectPlaceholder": "Auswählen",
+        "noValuesOffered": "Keine Werte angeboten",
+        "recommended": "Empfohlen",
+        "optionNew": "Neu",
+        "optionUnavailable": "Nicht verfügbar (war {value})",
+        "avatarChange": "Avatar ändern",
+        "avatarMonogram": "Buchstabe",
+        "avatarEmoji": "Emoji",
+        "avatarImage": "Bild",
+        "avatarMonogramHint": "Das erste Zeichen des Namens.",
+        "avatarUseMonogram": "Buchstaben verwenden",
+        "avatarEmojiPlaceholder": "Emoji eingeben oder einfügen",
+        "avatarEmojiUse": "Verwenden",
+        "avatarUpload": "Bild hochladen",
+        "avatarUploadHint": "Wird quadratisch zugeschnitten und auf 128×128 verkleinert.",
+        "avatarTooLarge": "Das Bild ist auch verkleinert noch zu groß. Versuche ein anderes.",
+        "avatarUnreadable": "Diese Datei ließ sich nicht als Bild lesen.",
+        "avatarColor": "Farbe",
+        "errors": {
+          "emptyName": "Gib dem Assistenten einen Namen.",
+          "nameTooLong": "Der Name darf höchstens {max} Zeichen lang sein.",
+          "duplicateName": "Ein Assistent namens „{name}“ existiert bereits.",
+          "descriptionTooLong": "Die Beschreibung darf höchstens {max} Zeichen lang sein.",
+          "instructionsTooLong": "Die Anweisungen dürfen höchstens {max} Zeichen lang sein.",
+          "invalidAvatar": "Dieser Avatar ist nicht verwendbar. Wähle einen anderen.",
+          "avatarTooLarge": "Das Avatarbild ist zu groß.",
+          "invalidAgentOptions": "Die Optionen des Agenten sind unvollständig. Öffne den Assistenten erneut und wähle alle Optionen.",
+          "notFound": "Dieser Assistent existiert nicht mehr."
+        }
+      }
     },
     "actions": {
       "dragSort": "Zum Neuordnen ziehen",
@@ -867,6 +974,9 @@
       "customApiKeyHint": "Inline in `[model.*].api_key` gespeichert, nur für diesen Endpunkt.",
       "customContextWindowLabel": "Kontextfenster (Tokens)",
       "customContextWindowHint": "Optional. Steuert den Zeitpunkt der automatischen Verdichtung; leer lassen für den Standard des Endpunkts.",
+      "customReasoningEffortsLabel": "Stufen für den Denkaufwand",
+      "customReasoningEffortsEmptyHint": "Keine Stufen angegeben. Sofern Groks eigene Modellliste diese Modell-ID nicht schon beschreibt, zeigt das Eingabefeld für dieses Modell keine Auswahl für den Denkaufwand. Wähle die Stufen, die dein Endpunkt akzeptiert, um sie hinzuzufügen.",
+      "customReasoningEffortsHint": "Wird in `[model.*].reasoning_efforts` geschrieben. Jede Stufe geht unverändert an deinen Endpunkt – wähle also nur, was er akzeptiert. Neue Sitzungen starten mit dem oben gewählten „Denkaufwand“ oder, solange dort „Standard verwenden“ steht, mit der ersten Stufe hier.",
       "autoCompactLabel": "Schwellenwert für Auto-Verdichtung (%)",
       "autoCompactHint": "Verdichtet die Unterhaltung, wenn die Kontextnutzung diesen Prozentsatz erreicht (Grok-Standard 85). Wird in `[session]` geschrieben."
     },
@@ -1020,6 +1130,30 @@
       "apiKeyHint": "Wird der CLI als KIRO_API_KEY übergeben. Leer lassen, um das per kiro-cli login angemeldete Konto zu nutzen; nur nötig, wo keine Browser-Anmeldung möglich ist (Server, Docker).",
       "saveConfig": "Kiro-Konfiguration speichern"
     },
+    "trae": {
+      "configManagement": "Konfiguration",
+      "configDescription": "TRAE CLI 2.0 steht nur Kunden des Flaggschiff-Tarifs von TRAE Enterprise zur Verfügung. Codeg startet das von dir installierte traecli, das Anmeldung, Skills und MCP-Server in ~/.trae speichert. Modell, Modus und Denkaufwand stehen nicht hier: TRAE CLI meldet sie über ACP, daher verwalten die Auswahlfelder im Eingabebereich sie pro Sitzung.",
+      "signInTitle": "Anmelden",
+      "signInHint": "Führe dies einmal in einem Terminal aus, um dich mit dem SSO deines Unternehmens anzumelden. Sitzungen in Codeg verwenden diese Anmeldung wieder.",
+      "copyCommand": "Befehl kopieren",
+      "commandCopied": "Befehl kopiert",
+      "patLabel": "Persönliches Zugriffstoken (optional)",
+      "patHint": "Für Rechner, auf denen keine Browser-Anmeldung möglich ist, etwa Server oder Docker-Installationen. Codeg übergibt es TRAE CLI als TRAECLI_PERSONAL_ACCESS_TOKEN und meldet sich bei jedem Sitzungsstart damit an. Leer lassen, um die Anmeldung aus traecli login zu nutzen.",
+      "hostLabel": "Enterprise-API-URL (optional)",
+      "hostHint": "Nur wenn deine Organisation TRAE unter einer eigenen Domain betreibt. Wird als TRAECLI_HOST übergeben; leer lassen für den Dienst von TRAE.",
+      "saveConfig": "TRAE CLI-Konfiguration speichern"
+    },
+    "commandCode": {
+      "configManagement": "Konfiguration",
+      "configDescription": "Codeg startet die Command Code CLI aus dem npm-Paket command-code, die Anmeldung, Skills und MCP-Server in ~/.commandcode speichert. Modell, Modus und Denkaufwand stehen nicht hier: Command Code meldet sie über ACP, daher verwalten die Auswahlfelder im Eingabebereich sie pro Sitzung.",
+      "signInTitle": "Anmelden",
+      "signInHint": "Führe dies einmal in einem Terminal aus, um dich mit deinem Command Code-Konto anzumelden. Sitzungen in Codeg verwenden diese Anmeldung wieder.",
+      "copyCommand": "Befehl kopieren",
+      "commandCopied": "Befehl kopiert",
+      "apiKeyLabel": "API-Schlüssel (optional)",
+      "apiKeyHint": "Für Rechner, auf denen keine Browser-Anmeldung möglich ist, etwa Server oder Docker-Installationen. Wird Command Code als COMMAND_CODE_API_KEY übergeben und hat Vorrang vor der Anmeldung aus command-code login. Leer lassen, um diese Anmeldung zu nutzen.",
+      "saveConfig": "Command Code-Konfiguration speichern"
+    },
     "deepseek": {
       "configManagement": "DeepSeek-Harness-Konfiguration",
       "configDescription": "Endpunkt und Schlüssel sind Umgebungsvariablen, die deepseek-acp beim Start liest. Modell und Denkstufe sind Auswahlfelder pro Sitzung — sie werden im Eingabefeld gewählt.",
@@ -1039,13 +1173,10 @@
       "modelName": "Modellname",
       "enableWebsocket": "WebSocket aktivieren",
       "enableWebsocketAria": "WebSocket für Codex Provider aktivieren",
-      "enableSkills": "Skills aktivieren",
-      "enableSkillsAria": "Skills für Codex aktivieren",
+      "enableWebsocketHint": "Nur einschalten, wenn dein Endpunkt die Responses API über WebSocket unterstützt, wie die offizielle OpenAI-API. Bei einem Endpunkt ohne diese Unterstützung kann codex den Turn fehlschlagen lassen oder bis zu fünfmal neu verbinden, bevor es auf HTTPS zurückfällt, und das in jeder neuen Sitzung erneut. Schreibt supports_websockets für diesen Provider in ~/.codex/config.toml und gilt ab der nächsten Sitzung.",
       "enableDefaultModeRequestUserInput": "Rückfragen im Default-Modus erlauben",
       "enableDefaultModeRequestUserInputAria": "Codex im Default-Modus Rückfragen erlauben",
       "enableDefaultModeRequestUserInputHint": "Codex darf sein request_user_input-Tool nur im Plan-Modus aufrufen. Aktiviere dies, damit es dich auch in normalen Turns fragen kann. Schreibt [features].default_mode_request_user_input in ~/.codex/config.toml; das Flag befindet sich upstream noch in Entwicklung. Wirkt ab der nächsten Sitzung.",
-      "enableFast": "Fast aktivieren",
-      "enableFastAria": "Fast-Servicestufe für Codex aktivieren",
       "sandboxGroupTitle": "Sandbox und Freigaben",
       "sandboxGroupHint": "Wird in die globale ~/.codex/config.toml geschrieben und gilt daher auch für codex-CLI- und IDE-Sitzungen. Es sind Thread-Standardwerte: Sie gelten für Turns, die codex selbst startet (/goal, /review, /compact). Normale Eingaben nutzen die Freigabe-Voreinstellung des Eingabefelds. Änderungen greifen nach einem Neustart der Sitzung.",
       "sandboxShadowedWarning": "config.toml setzt default_permissions, daher löst codex Berechtigungen über dieses Profil auf und ignoriert sandbox_mode vollständig. Entferne default_permissions, um die Optionen unten zu nutzen.",
@@ -1236,7 +1367,7 @@
         "defaultAgent": "Standard-Agent",
         "defaultAgentHint": "Mit welchem Primär-Agenten eine neue Sitzung startet. Leer oder unbekannt fällt auf build zurück.",
         "share": "Teilen",
-        "shareHint": "Ob eine Sitzung als Freigabelink veröffentlicht werden darf.",
+        "shareHint": "Ob eine Sitzung als Freigabelink veröffentlicht werden darf. OpenCode hat das Teilen von Sitzungen mit 1.19.1 eingestellt, daher hat diese Einstellung ab dieser Version keine Wirkung.",
         "shareManual": "Manuell (nur auf Anfrage)",
         "shareAuto": "Automatisch (jede neue Sitzung)",
         "shareDisabled": "Deaktiviert",
@@ -1515,6 +1646,10 @@
       "saveAntigravityConfigFailed": "Failed to save Antigravity config",
       "kiroSaved": "Kiro-Konfiguration gespeichert",
       "saveKiroFailed": "Kiro-Konfiguration konnte nicht gespeichert werden",
+      "traeSaved": "TRAE CLI-Konfiguration gespeichert",
+      "saveTraeFailed": "TRAE CLI-Konfiguration konnte nicht gespeichert werden",
+      "commandCodeSaved": "Command Code-Konfiguration gespeichert",
+      "saveCommandCodeFailed": "Command Code-Konfiguration konnte nicht gespeichert werden",
       "systemAgentAlreadyLatest": "{name} ist bereits aktuell ({version})"
     },
     "distribution": {
@@ -1821,6 +1956,62 @@
     "invalidFolderId": "Ungültige Ordner-ID",
     "loadingRepo": "Repository wird geladen..."
   },
+  "CommitMessageGeneration": {
+    "generate": "Commit-Nachricht generieren",
+    "stop": "Generierung stoppen ({seconds} s)",
+    "generating": "Commit-Nachricht wird geschrieben… {seconds} s",
+    "noChanges": "Keine Änderungen zu beschreiben",
+    "selectFiles": "Wähle die Dateien aus, die beschrieben werden sollen",
+    "busyCommitting": "Wird committet…",
+    "settings": "Einstellungen für Commit-Nachrichten",
+    "settingsMenuItem": "Einstellungen für Commit-Nachrichten…",
+    "untracked": {
+      "title": "Nicht verfolgte Dateien mitcommitten?",
+      "description": "Markierte Dateien werden in der Nachricht beschrieben und mit diesem Commit committet. Nicht markierte bleiben unverfolgt.",
+      "selectionCount": "{selected} / {total} Dateien ausgewählt",
+      "selectAll": "Alle auswählen",
+      "unselectAll": "Auswahl aller aufheben",
+      "showMore": "{count, plural, one {# weitere Datei} other {# weitere Dateien}} anzeigen",
+      "confirm": "Generieren",
+      "included": "Committet auch {count, plural, one {# nicht verfolgte Datei} other {# nicht verfolgte Dateien}}",
+      "drop": "Nicht verfolgte Dateien nicht committen",
+      "stagedMeanwhile": "Einige abgewählte Dateien wurden inzwischen gestaget und werden mit den verfolgten Änderungen committet"
+    },
+    "toasts": {
+      "failed": "Commit-Nachricht konnte nicht generiert werden",
+      "openSettings": "Einstellungen",
+      "autoCommitSkipped": "Nicht automatisch committet: Die Änderungen haben sich verschoben, während die Nachricht geschrieben wurde. Prüfe sie und committe dann."
+    },
+    "errors": {
+      "noChanges": "Es gibt keine Änderungen zu beschreiben.",
+      "noAgent": "Kein Agent, der sie schreiben kann. Wähle einen in den Einstellungen für Commit-Nachrichten.",
+      "emptyAnswer": "Die Antwort des Agenten enthielt keine Commit-Nachricht.",
+      "cancelled": "Die Generierung wurde gestoppt."
+    },
+    "dialog": {
+      "title": "Commit-Nachrichten generieren",
+      "description": "Mit der Schaltfläche neben dem Commit-Feld schreibt ein Agent eine Nachricht genau zu dem, was der Commit enthalten wird. Das läuft in einer eigenen Sitzung, die nie in deiner Sitzungsliste erscheint, und jede Berechtigungsanfrage wird abgelehnt.",
+      "scope": "Geltungsbereich",
+      "scopeGlobal": "Alle Ordner (globale Standardwerte)",
+      "scopeGlobalHint": "Ordner ohne eigene Einstellungen verwenden diese globalen Standardwerte.",
+      "source": "Konfigurationsquelle",
+      "sourceGlobal": "Globale Standards",
+      "sourceCustom": "Eigene",
+      "sourceGlobalFollow": "Folgt den globalen Einstellungen — Änderungen dort gelten hier automatisch.",
+      "sourceCustomHint": "Speichert eigene Einstellungen für diesen Ordner; die globalen Standards gelten dann nicht mehr.",
+      "pinAgent": "Bestimmten Agenten verwenden",
+      "pinAgentHint": "Dieser Agent schreibt jede Nachricht, mit den Optionen unten. Ein schnelles, günstiges Modell reicht für die Aufgabe.",
+      "followSessionHint": "Aus: Es schreibt der Agent der Sitzung, die du gerade ansiehst, sonst der Standard-Agent des Ordners, jeweils mit seinem Standardmodell.",
+      "autoCommit": "Automatisch committen",
+      "autoCommitHint": "Committet, sobald die Nachricht geschrieben ist. Haben sich die Änderungen inzwischen verschoben, wird die Nachricht nur eingetragen, damit du sie prüfen kannst.",
+      "instructions": "Anweisungen",
+      "instructionsHint": "Wird jeder Anfrage angehängt und hat Vorrang vor den eingebauten Regeln (etwa der Sprache der letzten Commits zu folgen).",
+      "instructionsPlaceholder": "z. B. Auf Deutsch schreiben. Conventional Commits verwenden. Im Text das Warum erklären.",
+      "save": "Speichern",
+      "cancel": "Abbrechen",
+      "loadFailed": "Einstellungen konnten nicht geladen werden"
+    }
+  },
   "MergePage": {
     "title": "Konflikte lösen",
     "invalidFolderId": "Ungültige Ordner-ID",
@@ -1987,6 +2178,7 @@
       "runningCountBadge": "{count, plural, one {# laufende Sitzung} other {# laufende Sitzungen}}",
       "statusCancelledBadge": "Abgebrochen",
       "worktreeRemovedBadge": "Quell-Worktree entfernt",
+      "cliBadge": "Über die Kommandozeile gestartet",
       "conversationCountUnit": "{count, plural, one {# Konversation} other {# Konversationen}}",
       "emptyFolderHint": "Keine Konversationen",
       "noMatchingConversations": "Keine passenden Konversationen",
@@ -2067,9 +2259,11 @@
         "dropToUngroup": "Hier ablegen, um aus der Gruppe zu entfernen"
       },
       "recentFilterAll": "Alle",
+      "recentFilterCli": "Kommandozeile",
       "recentFilterTitle": "In „Zuletzt“ anzeigen: {filter}",
       "noRecentChats": "Keine letzten Chats",
       "noRecentFolders": "Keine letzten Ordner-Unterhaltungen",
+      "noRecentCli": "Keine letzten Unterhaltungen von der Kommandozeile",
       "recentFilterMenuLabel": "In „Zuletzt“ anzeigen"
     },
     "conversation": {
@@ -2145,7 +2339,8 @@
       "updatedAt": "Aktualisiert",
       "none": "—",
       "copyField": "{field} kopieren",
-      "copiedField": "{field} kopiert"
+      "copiedField": "{field} kopiert",
+      "assistant": "Assistent"
     },
     "conversationCard": {
       "untitledConversation": "Unbenannte Konversation",
@@ -2285,7 +2480,10 @@
         "commits": "Einträge"
       },
       "noFolderTitle": "Kein Ordner geöffnet",
-      "noFolderHint": "Öffnen Sie einen Ordner, um seinen Inhalt hier zu sehen"
+      "noFolderHint": "Öffnen Sie einen Ordner, um seinen Inhalt hier zu sehen",
+      "openFullPage": "Als ganze Seite öffnen",
+      "back": "Zurück",
+      "noAutomations": "Für dieses Projekt gibt es noch keine Automatisierungen"
     },
     "windowControls": {
       "minimizeWindow": "Fenster minimieren",
@@ -3184,6 +3382,7 @@
       },
       "messageInput": {
         "askAnything": "Fragen Sie alles...",
+        "promptSuggestion": "{suggestion} (Tab zum Übernehmen)",
         "removeAttachmentAria": "{name} entfernen",
         "attachFiles": "Dateien anhängen",
         "addActions": "Hinzufügen",
@@ -3213,6 +3412,10 @@
         "searchModelAria": "Modelle suchen",
         "modelListLabel": "Modelle",
         "recommendedBadge": "Empfohlen",
+        "recommendedValue": "Empfohlen: {value}",
+        "searchOptions": "Optionen suchen...",
+        "searchOptionsAria": "Optionen suchen",
+        "noOptions": "Keine Optionen gefunden",
         "noModels": "Keine Modelle gefunden",
         "cancel": "Abbrechen",
         "send": "Senden",
@@ -3220,6 +3423,7 @@
         "steerIntoTurn": "In laufenden Turn einfügen",
         "steerAsNote": "Notiz für die nächste Prüfung senden",
         "steerQueuedInstead": "Stattdessen in die Warteschlange gestellt – wird mit dem nächsten Turn gesendet.",
+        "heldWhileResponding": "Antwortet noch – deine Nachricht bleibt im Eingabefeld. Sende sie, sobald die Antwort fertig ist.",
         "steerFailed": "Konnte nicht in den laufenden Turn eingefügt werden",
         "steerNoteFailed": "Deine Notiz konnte nicht gesendet werden",
         "slashCommands": "Slash-Befehle",
@@ -3245,7 +3449,8 @@
         "mentionGroupAgent": "Agenten",
         "mentionGroupSession": "Sitzungen",
         "mentionGroupCommit": "Commits",
-        "mentionGroupSkill": "Fähigkeiten"
+        "mentionGroupSkill": "Fähigkeiten",
+        "mentionGroupAssistant": "Assistenten"
       },
       "messageQueue": {
         "addToQueue": "Zur Warteschlange",
@@ -3578,7 +3783,6 @@
         "unknownAgent": "Sub-Agent",
         "openDetail": "Konversation anzeigen",
         "resumed": "Fortgesetzt",
-        "resumeDetail": "Details zur Fortsetzung",
         "resumeReasonLabel": "Grund der Fortsetzung",
         "detailTitle": "Unteragent-Konversation",
         "detailDescription": "Schreibgeschützte Ansicht der delegierten Unteragent-Konversation.",
@@ -3612,9 +3816,14 @@
             "child_auth_required": "Subagent braucht Anmeldung",
             "child_rejected": "Subagent lehnte Anfrage ab",
             "child_unknown": "Subagent: Fehler",
-            "unknown": "unbekannte Aufgabe"
+            "unknown": "unbekannte Aufgabe",
+            "assistant_not_found": "Assistent nicht gefunden",
+            "assistants_unsupported": "Neustart nötig",
+            "assistant_support_unknown": "keine Antwort"
           }
-        }
+        },
+        "unknownAssistant": "Assistent #{id}",
+        "deletedAssistant": "(gelöscht)"
       },
       "contentParts": {
         "showingTailOutput": "Zur besseren Performance wird während des Streamings nur die Endausgabe angezeigt.",
@@ -3632,6 +3841,8 @@
         "limit": "Grenze: {limit}",
         "pages": "Seiten: {pages}",
         "allowLarge": "Über dem Größenlimit",
+        "readImageLoading": "Bild wird geladen…",
+        "readImageError": "Das Bild konnte nicht geladen werden",
         "mode": "Modus: {mode}",
         "cell": "Zelle: {cell}",
         "shellSession": "Sitzung {id}",
@@ -3817,13 +4028,16 @@
       },
       "messageNav": {
         "title": "Nachrichtennavigation",
-        "collapse": "Nachrichtennavigation ausblenden",
         "loadingEarlier": "Frühere Nachrichten werden geladen…",
         "loadEarlier": "Frühere Nachrichten laden",
-        "collapsedSummary": "Nachrichten {count}",
         "fileCount": "{count, plural, one {# Datei} other {# Dateien}}",
-        "remove": "Entfernen",
-        "noDiffDataAvailable": "Keine Diff-Daten verfügbar für {filePath}"
+        "subAgentCount": "{count, plural, one {# Subagent} other {# Subagenten}}",
+        "showDiff": "Änderungen an {filePath} anzeigen",
+        "hideDiff": "Änderungen an {filePath} ausblenden",
+        "openFile": "{filePath} öffnen",
+        "collapse": "Einklappen",
+        "currentMessage": "Aktuelle Nachricht",
+        "scrollToCurrent": "Zur aktuellen Nachricht (#{ordinal}) scrollen"
       },
       "replyArtifacts": {
         "title": "Geänderte Dateien",
@@ -3881,6 +4095,9 @@
         "resumeDelegation": "Aufgabe {task} wird fortgesetzt",
         "resumeDelegationNoId": "Delegierte Aufgabe wird fortgesetzt",
         "promptLabel": "Anweisung",
+        "ackRecorded": "In der Arbeitsaufgabe erfasst",
+        "ackNotRecorded": "Nicht in der Arbeitsaufgabe erfasst",
+        "ackNotRecordedWithReason": "Nicht in der Arbeitsaufgabe erfasst: {reason}",
         "verdict": {
           "success": "erfolgreich",
           "needs_review": "Prüfung nötig",
@@ -3987,6 +4204,7 @@
         "cardRunning": "Läuft im Hintergrund",
         "cardLaunchedPending": "Hintergrundaufgabe gestartet",
         "cardCompleted": "Hintergrundaufgabe abgeschlossen",
+        "cardInterim": "Hintergrundaufgabe: Zwischenergebnis",
         "cardFinishedWithStatus": "Hintergrundaufgabe beendet ({status})",
         "cardResultPending": "Ergebnis steht noch aus"
       },
@@ -3996,6 +4214,18 @@
         "tokens": "{count} Tokens",
         "stopDeclined": "Diese Aufgabe konnte nicht gestoppt werden – sie ist möglicherweise bereits beendet.",
         "stopFailed": "Aufgabe konnte nicht gestoppt werden: {error}"
+      },
+      "remoteControl": {
+        "title": "Fernsteuerung aktiv",
+        "open": "Im Browser öffnen",
+        "copy": "Link kopieren",
+        "copied": "Kopiert",
+        "qr": "QR-Code",
+        "qrLabel": "QR-Code des Fernsteuerungs-Links dieser Sitzung",
+        "qrHint": "Mit dem Handy scannen, um diese Sitzung in der Claude-App oder auf claude.ai/code fortzusetzen.",
+        "noUrl": "Claude Code hat keinen Link für diese Sitzung zurückgegeben",
+        "turnOff": "Ausschalten",
+        "turnOffBusy": "Verfügbar, sobald Claude fertig ist"
       },
       "proposedPlan": {
         "title": "Vorgeschlagener Plan",
@@ -5035,7 +5265,8 @@
       "customAgents": "Eigene Agenten",
       "quickMessages": "Schnellnachrichten",
       "taskTemplates": "Aufgabenvorlagen",
-      "preferences": "App-Einstellungen (Sprache, Aussehen, Schalter)"
+      "preferences": "App-Einstellungen (Sprache, Aussehen, Schalter)",
+      "assistants": "Assistenten"
     },
     "scopeExcluded": {
       "conversations": "Unterhaltungen und Verlauf",
@@ -5105,7 +5336,8 @@
       "customAgents": "{count, plural, one {# eigener Agent} other {# eigene Agenten}}",
       "quickMessages": "{count, plural, one {# Schnellnachricht} other {# Schnellnachrichten}}",
       "taskTemplates": "{count, plural, one {# Aufgabenvorlage} other {# Aufgabenvorlagen}}",
-      "preferences": "{count, plural, one {# Einstellung} other {# Einstellungen}}"
+      "preferences": "{count, plural, one {# Einstellung} other {# Einstellungen}}",
+      "assistants": "{count, plural, one {# Assistent} other {# Assistenten}}"
     },
     "rollbackTitle": "Import rückgängig machen",
     "rollbackHint": "Jeder Import und jede Wiederherstellung sichern vorher den Stand dieses Geräts. Die letzten zehn bleiben erhalten.",
@@ -5121,7 +5353,8 @@
     "passphrase": "Passphrase",
     "passphraseKeep": "Leer lassen, um die gespeicherte Passphrase zu behalten",
     "passphrasePlaceholder": "Passphrase zur Verschlüsselung",
-    "passphraseHint": "Bleibt im Schlüsselbund dieses Geräts und wird nie hochgeladen. Gib auf deinen anderen Geräten dieselbe Passphrase ein."
+    "passphraseHint": "Bleibt im Schlüsselbund dieses Geräts und wird nie hochgeladen. Gib auf deinen anderen Geräten dieselbe Passphrase ein.",
+    "assistantsRenamed": "{count, plural, one {# Assistent wurde umbenannt: Hier gab es schon einen mit seinem Namen.} other {# Assistenten wurden umbenannt: Hier gab es schon welche mit ihren Namen.}}"
   },
   "backup": {
     "restore": {
@@ -5165,7 +5398,12 @@
     "reconnectNow": "Jetzt neu verbinden",
     "sessionExpiredTitle": "Sitzung abgelaufen",
     "sessionExpiredDescription": "Deine Sitzung ist nicht mehr gültig. Bitte melde dich erneut an, um fortzufahren.",
-    "goToLogin": "Zur Anmeldung"
+    "proxySignInTitle": "Anmeldung abgelaufen",
+    "proxySignInDescription": "Deine Anmeldung beim Proxy vor diesem Server ist abgelaufen. Lade die Seite neu, um dich erneut anzumelden.",
+    "goToLogin": "Zur Anmeldung",
+    "versionChangedTitle": "Auf dem Server läuft jetzt Codeg {version}",
+    "versionChangedDescription": "Diese Seite läuft noch mit {version}. Lade sie neu, um die Version des Servers zu verwenden.",
+    "reloadPage": "Neu laden"
   },
   "LiveFeedback": {
     "placeholder": "Sende {agent} eine Notiz, während er arbeitet…",
@@ -5828,7 +6066,10 @@
     "cronApply": "Anwenden",
     "cronPreviewLabel": "Vorschau",
     "cronOpenBuilder": "Zeitplan-Generator öffnen",
-    "branchDefault": "Standard-Branch"
+    "branchDefault": "Standard-Branch",
+    "booleanOn": "An",
+    "booleanOff": "Aus",
+    "modelNotSwitched": "Der Agent hat nicht zum gewählten Modell gewechselt; diese Optionen gehören möglicherweise zu einem anderen Modell."
   },
   "Tasks": {
     "title": "To-dos",
@@ -5872,6 +6113,7 @@
     "statusFailed": "Fehlgeschlagen",
     "statusCanceled": "Abgebrochen",
     "statusInterrupted": "Unterbrochen",
+    "statusDeferred": "Zurückgestellt",
     "badgeCleanupFailed": "Aufräumen fehlgeschlagen",
     "badgeWorktreeKept": "Worktree behalten",
     "badgeWorktreeRemoved": "Worktree entfernt",
@@ -5924,6 +6166,7 @@
     "actionFollowUp": "Nachfassen",
     "actionAddNote": "Hinweis ergänzen",
     "followUpSubmit": "Senden",
+    "followUpDialogDescription": "Wähle ein Szenario und schreib, was du brauchst – der Agent nimmt die Aufgabe in derselben Sitzung wieder auf, und die Karte wandert nach „In Arbeit“.",
     "followUpIntentRevise": "Überarbeiten",
     "followUpIntentContinue": "Weitermachen",
     "followUpIntentQuestion": "Nachfragen",
@@ -5936,6 +6179,8 @@
     "followUpPlaceholderRequeue": "Optional: Warum hast du abgebrochen, und was soll diesmal anders sein?",
     "actionArchive": "Archivieren",
     "actionUnarchive": "Dearchivieren",
+    "actionDefer": "Später erledigen",
+    "actionUndefer": "Zurück zu „Wartet auf dich“",
     "archiveAllDone": "Alle archivieren",
     "dropToStart": "Loslassen zum Starten",
     "errorView": "Ansehen",

@@ -18,6 +18,10 @@ import type {
 import { randomUUID } from "@/lib/utils"
 import { inferLiveToolName } from "@/lib/tool-call-normalization"
 import {
+  toolStatusTerminal,
+  toolStatusUnsettled,
+} from "@/lib/tool-call-lifecycle"
+import {
   acpConnect,
   acpGetAgentStatus,
   acpPrompt,
@@ -70,6 +74,7 @@ import type {
   SessionUsageUpdateInfo,
   PromptCapabilitiesInfo,
   PromptInputBlock,
+  RemoteControlInfo,
   ToolCallImageWire,
   UserMessageBlock,
 } from "@/lib/types"
@@ -290,6 +295,16 @@ export interface LiveMessage {
   startedAt: number
 }
 
+/** A stopped turn's record (see `ConnectionState.cancelledTurn`). */
+export interface CancelledTurnReports {
+  /** The turn's message, with every later report on one of its tool calls
+   *  folded in. */
+  message: LiveMessage
+  /** The tool calls the turn left open when it ended: the cards these reports
+   *  may settle, and the only ones. */
+  openCalls: ReadonlySet<string>
+}
+
 // ── Per-connection state ──
 
 export interface ConnectionState {
@@ -306,6 +321,23 @@ export interface ConnectionState {
   configOptions: SessionConfigOptionInfo[] | null
   availableCommands: AvailableCommandInfo[] | null
   usage: SessionUsageUpdateInfo | null
+  /**
+   * The prompt the agent predicts the user will send next (claude-agent-acp
+   * 0.92.0), offered as gray text in the empty composer, where Tab fills it in.
+   * Set by `prompt_suggestion`, withdrawn by its `null`, and cleared when a
+   * prompt starts (STATUS_CHANGED → prompting): it predicted that prompt. The
+   * backend keeps the same value for the snapshot.
+   */
+  promptSuggestion: string | null
+  /**
+   * Claude Code's Remote Control while it is on (claude-agent-acp 0.93.0's
+   * `/remote-control`): the session can be continued from claude.ai/code or a
+   * phone for as long as the agent CLI runs. Set by `remote_control`, cleared
+   * by its `null`, by a fork (codeg closes the session it leaves) and when the
+   * connection goes. While it is set the idle sweep leaves the connection
+   * alone. The backend keeps the same value for the snapshot.
+   */
+  remoteControl: RemoteControlInfo | null
   liveMessage: LiveMessage | null
   pendingPermission: PendingPermission | null
   /** In-flight user prompt for the current turn — set from a `user_message`
@@ -456,6 +488,32 @@ export interface ConnectionState {
    */
   outOfTurnToolCalls: ReadonlyMap<string, ToolCallInfo> | null
   /**
+   * Whether a turn has run on this connection: it has been `prompting` at
+   * least once, or the snapshot it was hydrated from says one has (it is
+   * mid-turn, or a prompt has linked it to its conversation row, which the
+   * backend does at the first prompt). Never goes back to `false`.
+   *
+   * Until then, whatever the agent sends outside a turn is its start-up output
+   * and not a turn of its own (see `isUnrenderedAgentTurnContent`), so it must
+   * not raise the "load background activity" notice. Read at event time, never
+   * rendered.
+   */
+  hasPrompted: boolean
+  /**
+   * A turn the user stopped, while the agent may still be reporting on it.
+   * codeg ends a stopped turn the moment the user asks
+   * (`ConnectionCommand::Cancel` emits `turn_complete` before the agent
+   * answers), so the reports that close the turn's open tool calls — Claude
+   * Code's `failed` with the CLI's refusal for a command, "The turn was
+   * cancelled…" for a sub-agent's — land after the panel promoted the turn.
+   * Folded into this record and handed to the runtime store
+   * (`applyCancelledTurnReports`), they settle its cards as they would have
+   * settled inside the turn; left out, a stopped command reads as completed
+   * until the conversation is reloaded. Kept until the next prompt starts;
+   * `null` otherwise, and for a turn that left no tool call open.
+   */
+  cancelledTurn: CancelledTurnReports | null
+  /**
    * Client-local: the user dismissed (X) the stale banner for the CURRENT
    * drift. Hides the banner without touching the underlying `configStale`
    * state. Reset to `false` whenever a fresh `session_config_stale` arrives (a
@@ -509,6 +567,9 @@ type Action =
       type: "STATUS_CHANGED"
       contextKey: string
       status: ConnectionStatus
+      /** The ending turn's stop reason, when `turn_complete` is what moved
+       *  the status. */
+      stopReason?: string
     }
   | {
       // One AIR typed session-failure upsert (`session_failure` event).
@@ -760,6 +821,16 @@ type Action =
       type: "USAGE_UPDATE"
       contextKey: string
       usage: SessionUsageUpdateInfo
+    }
+  | {
+      type: "PROMPT_SUGGESTION"
+      contextKey: string
+      text: string | null
+    }
+  | {
+      type: "REMOTE_CONTROL"
+      contextKey: string
+      remoteControl: RemoteControlInfo | null
     }
   | {
       type: "EVENT_APPLIED"
@@ -1700,6 +1771,98 @@ function recordOutOfTurnToolCall(
   return next
 }
 
+type ToolCallUpdateAction = Extract<Action, { type: "TOOL_CALL_UPDATE" }>
+
+/** Fold one `tool_call_update` into the tool call it revises. Shared by the
+ *  in-turn path and a stopped turn's late reports (`foldCancelledTurnReport`),
+ *  so a report lands the same way on either side of the turn's end. */
+function mergeToolCallUpdate(
+  info: ToolCallInfo,
+  update: ToolCallUpdateAction
+): ToolCallInfo {
+  let newChunks: string[]
+  let newTotalBytes: number
+
+  if (update.raw_output === null) {
+    newChunks = info.raw_output_chunks
+    newTotalBytes = info.raw_output_total_bytes
+  } else if (update.raw_output_append) {
+    newChunks = [...info.raw_output_chunks, update.raw_output]
+    newTotalBytes = info.raw_output_total_bytes + update.raw_output.length
+
+    // 超限时从头部批量移除 chunks（单次 slice 替代循环 shift）
+    if (
+      newTotalBytes > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS &&
+      newChunks.length > 1
+    ) {
+      let evictCount = 0
+      let evictedBytes = 0
+      while (
+        evictCount < newChunks.length - 1 &&
+        newTotalBytes - evictedBytes > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS
+      ) {
+        evictedBytes += newChunks[evictCount].length
+        evictCount++
+      }
+      if (evictCount > 0) {
+        newChunks = newChunks.slice(evictCount)
+        newTotalBytes -= evictedBytes
+      }
+    }
+  } else {
+    // 非 append 模式（替换）
+    newChunks = [update.raw_output]
+    newTotalBytes = update.raw_output.length
+  }
+
+  return {
+    ...info,
+    title: update.title ?? info.title,
+    status: update.status ?? info.status,
+    content: update.content ?? info.content,
+    raw_input: update.raw_input ?? info.raw_input,
+    raw_output_chunks: newChunks,
+    locations: update.locations ?? info.locations,
+    meta: update.meta ?? info.meta,
+    raw_output_total_bytes: newTotalBytes,
+    images: update.images !== null ? update.images : info.images,
+  }
+}
+
+/** A stopped turn's record (`ConnectionState.cancelledTurn`), or `null` when
+ *  the turn left no tool call open, which leaves its reports nothing to
+ *  settle. */
+function cancelledTurnOf(message: LiveMessage): CancelledTurnReports | null {
+  const openCalls = new Set<string>()
+  for (const block of message.content) {
+    if (block.type === "tool_call" && toolStatusUnsettled(block.info.status)) {
+      openCalls.add(block.info.tool_call_id)
+    }
+  }
+  return openCalls.size > 0 ? { message, openCalls } : null
+}
+
+/** Fold an out-of-turn report into a stopped turn's record when it revises one
+ *  of that turn's tool calls. Returns `turn` itself otherwise. */
+function foldCancelledTurnReport(
+  turn: CancelledTurnReports | null,
+  update: ToolCallUpdateAction
+): CancelledTurnReports | null {
+  if (!turn) return turn
+  const { content } = turn.message
+  const index = content.findIndex(
+    (b) => b.type === "tool_call" && b.info.tool_call_id === update.tool_call_id
+  )
+  const block = content[index]
+  if (!block || block.type !== "tool_call") return turn
+  const next = content.slice()
+  next[index] = {
+    type: "tool_call",
+    info: mergeToolCallUpdate(block.info, update),
+  }
+  return { ...turn, message: { ...turn.message, content: next } }
+}
+
 function connectionsReducer(
   state: ConnectionsMap,
   action: Action
@@ -1725,6 +1888,8 @@ function connectionsReducer(
         configOptions: null,
         availableCommands: null,
         usage: null,
+        promptSuggestion: null,
+        remoteControl: null,
         liveMessage: null,
         pendingPermission: null,
         pendingUserMessage: null,
@@ -1749,6 +1914,8 @@ function connectionsReducer(
         configStaleDismissed: false,
         backgroundOutstanding: 0,
         outOfTurnToolCalls: null,
+        hasPrompted: false,
+        cancelledTurn: null,
       })
       return next
     }
@@ -1786,6 +1953,8 @@ function connectionsReducer(
         configOptions: null,
         availableCommands: null,
         usage: null,
+        promptSuggestion: null,
+        remoteControl: null,
         liveMessage: null,
         pendingPermission: null,
         pendingUserMessage: null,
@@ -1810,6 +1979,8 @@ function connectionsReducer(
         configStaleDismissed: false,
         backgroundOutstanding: 0,
         outOfTurnToolCalls: null,
+        hasPrompted: false,
+        cancelledTurn: null,
       })
       return next
     }
@@ -1854,6 +2025,9 @@ function connectionsReducer(
         current.availableCommands ?? action.patch.availableCommands
       const mergedPromptCapabilities =
         action.patch.promptCapabilities ?? current.promptCapabilities
+      // Latched like `selectorsReady`: a turn that ran stays run, however old
+      // the snapshot that reports it.
+      const mergedHasPrompted = action.patch.hasPrompted || current.hasPrompted
 
       // Race guard: the snapshot may have been generated BEFORE events
       // that have since arrived and been applied to in-memory state.
@@ -1910,6 +2084,7 @@ function connectionsReducer(
           mergedConfigOptions === current.configOptions &&
           mergedAvailableCommands === current.availableCommands &&
           mergedPromptCapabilities === current.promptCapabilities &&
+          mergedHasPrompted === current.hasPrompted &&
           mergedSessionFailures === current.sessionFailures &&
           mergedAsyncTasks === current.asyncTasks
         ) {
@@ -1924,6 +2099,7 @@ function connectionsReducer(
           promptCapabilities: mergedPromptCapabilities,
           selectorsReady: mergedSelectorsReady,
           supportsFork: mergedSupportsFork,
+          hasPrompted: mergedHasPrompted,
           sessionFailures: mergedSessionFailures,
           asyncTasks: mergedAsyncTasks,
         })
@@ -1944,7 +2120,16 @@ function connectionsReducer(
         configOptions: action.patch.configOptions,
         availableCommands: action.patch.availableCommands,
         usage: action.patch.usage,
+        // Current state like `usage`; a stale snapshot never reaches here, so
+        // it cannot bring back a prediction a later prompt already spent.
+        promptSuggestion: action.patch.promptSuggestion,
+        remoteControl: action.patch.remoteControl,
         liveMessage: hydratedLiveMessage,
+        // A snapshot with a turn in flight carries a prompt newer than any the
+        // user stopped, which ends that turn's window as the status event of
+        // that prompt would have.
+        cancelledTurn:
+          action.patch.status === "prompting" ? null : current.cancelledTurn,
         // The snapshot's live message REPLACES the local one, and the wire has
         // no `steering` block (the backend never records one — see
         // `snapshot-denormalize`), so every adopted mid-turn message is gone
@@ -1970,6 +2155,7 @@ function connectionsReducer(
         promptCapabilities: mergedPromptCapabilities,
         selectorsReady: mergedSelectorsReady,
         supportsFork: mergedSupportsFork,
+        hasPrompted: mergedHasPrompted,
         // Staleness is a current-state field (like status): apply the snapshot's
         // value on the fresh path. `configStaleDismissed` is client-local and
         // preserved via `...current`.
@@ -2028,7 +2214,12 @@ function connectionsReducer(
       if (!conn) return state
       const next = new Map(state)
       const updated = { ...conn, status: action.status }
+      if (action.status === "disconnected" || action.status === "error") {
+        // Remote Control ran in the agent CLI, which is gone.
+        updated.remoteControl = null
+      }
       if (action.status === "prompting") {
+        updated.hasPrompted = true
         updated.liveMessage = {
           id: randomUUID(),
           role: "assistant",
@@ -2050,6 +2241,11 @@ function connectionsReducer(
         // The out-of-turn window ended: its tool-call contexts (kept only for
         // background permission enrichment) are stale for the new turn.
         updated.outOfTurnToolCalls = null
+        // A new turn ends the window in which a stopped one's reports land.
+        updated.cancelledTurn = null
+        // The predicted prompt was for this prompt's place, so it is spent
+        // whatever the user sent (the backend clears its copy the same way).
+        updated.promptSuggestion = null
       } else if (conn.status === "prompting") {
         // Prompt cycle ended: clear in-flight Claude API retry banner.
         updated.claudeApiRetry = null
@@ -2066,6 +2262,16 @@ function connectionsReducer(
         // Likewise a blocked exit_plan_mode approval — cleared via
         // `plan_approval_resolved` normally; this is the turn-end safety net.
         updated.pendingPlanApproval = null
+      }
+      // Keep a stopped turn for the reports that close its cards (see
+      // `ConnectionState.cancelledTurn`). Keyed on the message, so ending the
+      // same turn again keeps the reports already folded in.
+      if (
+        action.stopReason === "cancelled" &&
+        conn.liveMessage &&
+        conn.cancelledTurn?.message.id !== conn.liveMessage.id
+      ) {
+        updated.cancelledTurn = cancelledTurnOf(conn.liveMessage)
       }
       next.set(action.contextKey, updated)
       return next
@@ -2240,8 +2446,10 @@ function connectionsReducer(
       // Out-of-turn: stay out of `liveMessage` (see TOOL_CALL), but merge the
       // registry entry and backfill an open permission dialog waiting for
       // this tool's input — a background permission must still show its
-      // command/diff details. In-turn ordering is safe: the panel flushes
-      // pending tool-call updates at turn_complete BEFORE status flips back.
+      // command/diff details. A report on a tool call of a turn the user
+      // stopped also folds into `cancelledTurn`. In-turn ordering is safe: the
+      // panel flushes pending tool-call updates at turn_complete BEFORE status
+      // flips back.
       if (conn.status !== "prompting") {
         const existing = conn.outOfTurnToolCalls?.get(action.tool_call_id)
         const merged: ToolCallInfo = existing
@@ -2279,6 +2487,7 @@ function connectionsReducer(
             conn.pendingPermission,
             merged
           ),
+          cancelledTurn: foldCancelledTurnReport(conn.cancelledTurn, action),
         })
         return next
       }
@@ -2317,60 +2526,11 @@ function connectionsReducer(
       } else {
         const block = prev.content[existingIndex]
         if (block.type !== "tool_call") return state
-
-        let newChunks: string[]
-        let newTotalBytes: number
-
-        if (action.raw_output === null) {
-          newChunks = block.info.raw_output_chunks
-          newTotalBytes = block.info.raw_output_total_bytes
-        } else if (action.raw_output_append) {
-          newChunks = [...block.info.raw_output_chunks, action.raw_output]
-          newTotalBytes =
-            block.info.raw_output_total_bytes + action.raw_output.length
-
-          // 超限时从头部批量移除 chunks（单次 slice 替代循环 shift）
-          if (
-            newTotalBytes > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS &&
-            newChunks.length > 1
-          ) {
-            let evictCount = 0
-            let evictedBytes = 0
-            while (
-              evictCount < newChunks.length - 1 &&
-              newTotalBytes - evictedBytes > MAX_LIVE_TOOL_RAW_OUTPUT_CHARS
-            ) {
-              evictedBytes += newChunks[evictCount].length
-              evictCount++
-            }
-            if (evictCount > 0) {
-              newChunks = newChunks.slice(evictCount)
-              newTotalBytes -= evictedBytes
-            }
-          }
-        } else {
-          // 非 append 模式（替换）
-          newChunks = [action.raw_output]
-          newTotalBytes = action.raw_output.length
-        }
-
         newContent = [
           ...prev.content.slice(0, existingIndex),
           {
             type: "tool_call" as const,
-            info: {
-              ...block.info,
-              title: action.title ?? block.info.title,
-              status: action.status ?? block.info.status,
-              content: action.content ?? block.info.content,
-              raw_input: action.raw_input ?? block.info.raw_input,
-              raw_output_chunks: newChunks,
-              locations: action.locations ?? block.info.locations,
-              meta: action.meta ?? block.info.meta,
-              raw_output_total_bytes: newTotalBytes,
-              images:
-                action.images !== null ? action.images : block.info.images,
-            },
+            info: mergeToolCallUpdate(block.info, action),
           },
           ...prev.content.slice(existingIndex + 1),
         ]
@@ -2628,6 +2788,12 @@ function connectionsReducer(
         ...conn,
         sessionId: action.sessionId,
         asyncTasks: forked ? [] : conn.asyncTasks,
+        // Likewise the predicted prompt: it follows the last turn of the
+        // session left behind, and a fork starts from an earlier point of it.
+        promptSuggestion: forked ? null : conn.promptSuggestion,
+        // And Remote Control: codeg closes the session a fork leaves, and its
+        // CLI with it.
+        remoteControl: forked ? null : conn.remoteControl,
       })
       return next
     }
@@ -3024,6 +3190,32 @@ function connectionsReducer(
       return next
     }
 
+    case "PROMPT_SUGGESTION": {
+      const conn = state.get(action.contextKey)
+      if (!conn || conn.promptSuggestion === action.text) return state
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, promptSuggestion: action.text })
+      return next
+    }
+
+    case "REMOTE_CONTROL": {
+      const conn = state.get(action.contextKey)
+      if (!conn) return state
+      const before = conn.remoteControl
+      const after = action.remoteControl
+      if (
+        (before === null && after === null) ||
+        (before !== null &&
+          after !== null &&
+          before.session_url === after.session_url)
+      ) {
+        return state
+      }
+      const next = new Map(state)
+      next.set(action.contextKey, { ...conn, remoteControl: after })
+      return next
+    }
+
     default:
       return state
   }
@@ -3119,6 +3311,13 @@ export function useConnectionStore(): ConnectionStoreApi {
     )
   }
   return ctx
+}
+
+/** The store, or `null` outside `AcpConnectionsProvider` — for a card that
+ *  renders fine without live state and only enriches itself when it has some
+ *  (the `get_delegation_status` row). */
+export function useOptionalConnectionStore(): ConnectionStoreApi | null {
+  return useContext(ConnectionStoreContext)
 }
 
 // ── Actions context (unchanged interface) ──
@@ -3248,10 +3447,12 @@ export interface AcpActionsValue {
      * firehose cannot serve on its own: `acp://event` only carries FUTURE
      * events, so without a snapshot the viewer misses everything the turn
      * already produced and its status stays `connected` instead of
-     * `prompting` (no streaming affordance, empty live message). Real
-     * delegation children attach at `delegation_started` — before the
-     * child's first event — and leave this off. No effect on web/remote:
-     * the attach protocol always opens with a snapshot.
+     * `prompting` (no streaming affordance, empty live message) — and a
+     * permission or question it is already parked on never arrives. A
+     * delegation child attached on its live `delegation_started` — before the
+     * child's first event — leaves this off; one re-seeded from the parent's
+     * snapshot (`seedDelegationsFromSnapshot`) is mid-turn and sets it. No
+     * effect on web/remote: the attach protocol always opens with a snapshot.
      */
     hydrate?: boolean
   }): void
@@ -3344,7 +3545,21 @@ export function useAcpActions(): AcpActionsValue {
 // physical Tauri/WebSocket subscription; consumers register callbacks here
 // instead of opening a second listener. See `useAcpEvent` below.
 
-type EventSubscriberHandler = (envelope: EventEnvelope) => void
+/** How an envelope reached the subscribers, when that matters to them. */
+export interface AcpEventDelivery {
+  /**
+   * Synthesized by `seedDelegationsFromSnapshot` from a snapshot's
+   * `active_delegations` rather than received live: the `delegation_started`
+   * of a delegation that was ALREADY running when this client attached — so its
+   * child is mid-turn, and may already be parked on the user.
+   */
+  seededFromSnapshot: boolean
+}
+
+type EventSubscriberHandler = (
+  envelope: EventEnvelope,
+  delivery?: AcpEventDelivery
+) => void
 type EventSubscriberRef = { current: EventSubscriberHandler }
 
 interface AcpEventSubscriberApi {
@@ -3391,6 +3606,20 @@ export function useAcpEvent(handler: EventSubscriberHandler): void {
       ctx.subscribers.delete(ref)
     }
   }, [ctx])
+}
+
+/**
+ * The turn `conn` was streaming ended without this client receiving its end —
+ * a re-attach after a disconnect found it over. The part of the reply that
+ * came before the gap is all this client has, so the conversations showing
+ * this session read the reply from the transcript when they settle the turn
+ * (`markTurnEndUnseen`), instead of keeping that part as the whole reply.
+ */
+function noteTurnEndedUnseen(conn: ConnectionState): void {
+  if (!conn.sessionId) return
+  useConversationRuntimeStore
+    .getState()
+    .actions.markTurnEndUnseen(conn.sessionId)
 }
 
 // ── Helper: extract affected key from action ──
@@ -3970,6 +4199,34 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         )
       }
 
+      // A stopped turn's late reports (see `cancelledTurn`) settle the cards of
+      // the turn the panel promoted. Only once a report in the batch closes a
+      // tool call: progress folds in on its own and rides along, rather than
+      // having the runtime store rebuild the turn per batch.
+      const settleCancelledTurnCards = (
+        key: string,
+        batch: ReadonlyArray<{ contextKey: string; status: string | null }>
+      ) => {
+        const nextConn = next.get(key)
+        const folded = nextConn?.cancelledTurn
+        if (!nextConn || !folded) return
+        if (folded === prev.get(key)?.cancelledTurn) return
+        if (
+          !batch.some(
+            (item) => item.contextKey === key && toolStatusTerminal(item.status)
+          )
+        ) {
+          return
+        }
+        const conversationId = nextConn.sessionId
+          ? getConversationIdByExternalIdFromStore(nextConn.sessionId)
+          : null
+        if (conversationId == null) return
+        useConversationRuntimeStore
+          .getState()
+          .actions.applyCancelledTurnReports(conversationId, folded)
+      }
+
       if (action.type === "REMOVE_ALL") {
         notifyAllKeyListeners()
       } else if (action.type === "STREAM_BATCH") {
@@ -3983,6 +4240,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         for (const key of keys) {
           mirrorLiveMessage(key)
           notifyKeyListeners(key)
+          settleCancelledTurnCards(key, action.actions)
         }
       } else if (action.type === "REKEY_CONNECTION") {
         // The connection (with its in-flight liveMessage) moved to toKey; sync
@@ -3993,6 +4251,17 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       } else {
         const key = getAffectedKey(action)
         if (key) {
+          // A snapshot that takes the connection out of a turn ended a turn
+          // this client did not see end: the gap was too long to replay, and
+          // the events in it — the rest of the reply among them — are skipped.
+          // Marked BEFORE the listeners hear of it, so the turn-end edge that
+          // their re-render fires finds the mark.
+          if (action.type === "HYDRATE_FROM_SNAPSHOT") {
+            const before = prev.get(key)
+            const after = next.get(key)
+            if (before?.status === "prompting" && after?.status !== "prompting")
+              noteTurnEndedUnseen(before)
+          }
           mirrorLiveMessage(key)
           notifyKeyListeners(key)
           rememberCommands(key)
@@ -4439,6 +4708,42 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     },
     []
   )
+
+  // connectionId → what each surface still hydrating it has missed.
+  //
+  // A desktop surface that backfills from a snapshot routes the connection
+  // only once the snapshot is in (`connectAsViewer`, `attachDelegationChild`
+  // with `hydrate`), so whatever arrives in between must be kept for it. The
+  // unmapped buffer does that only while NO surface routes the connection;
+  // when another one already does — a tab on a sub-agent's own conversation
+  // while its delegation re-attaches, a second tile on one conversation — the
+  // firehose hands the event to that surface alone, and a permission raised in
+  // the window would never reach this one. So each hydrating attach records
+  // those deliveries itself (one list per attach: concurrent attaches of a
+  // connection never drain each other) and replays them as echoes once routed
+  // (`applyHydrationBacklog`).
+  const hydrationEchoesRef = useRef(new Map<string, Set<EventEnvelope[]>>())
+
+  const beginHydrationEchoes = useCallback((connectionId: string) => {
+    const echoes: EventEnvelope[] = []
+    const lists =
+      hydrationEchoesRef.current.get(connectionId) ?? new Set<EventEnvelope[]>()
+    lists.add(echoes)
+    hydrationEchoesRef.current.set(connectionId, lists)
+    return {
+      echoes,
+      /** Stop recording. Idempotent. */
+      stop: () => {
+        lists.delete(echoes)
+        if (
+          lists.size === 0 &&
+          hydrationEchoesRef.current.get(connectionId) === lists
+        ) {
+          hydrationEchoesRef.current.delete(connectionId)
+        }
+      },
+    }
+  }, [])
 
   // ── RAF batching for tool_call_update events ──
   const pendingToolCallUpdates = useRef<
@@ -5012,16 +5317,21 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           //    the user had to dismiss one by one. Only the single-task case
           //    still carries the agent's own summary — a count says everything
           //    a batch notification usefully can.
+          //
+          //    An interim notification is no task's end (the sub-agent will
+          //    notify again), so it announces nothing; it still flips its card
+          //    below, to the interim result.
+          const finished = (e.settled ?? []).filter((s) => !s.interim)
           if (e.settled && e.settled.length > 0) {
-            if (!quiet) {
+            if (!quiet && finished.length > 0) {
               const nc = storeRef.current.connections.get(contextKey)
               const agentLabel = nc ? getAgentLabel(nc.agentType) : "Agent"
-              const count = e.settled.length
+              const count = finished.length
               const many = tChat("backgroundTasks.notifySettledMany", {
                 agent: agentLabel,
                 count,
               })
-              const single = e.settled[0]
+              const single = finished[0]
               void notifyDesktop(
                 "background_task",
                 sessionNotification(contextKey, {
@@ -5073,6 +5383,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
                   status: settled.status,
                   summary: settled.summary ?? null,
                   result: settled.result ?? null,
+                  interim: settled.interim === true,
                 })
               }
             }
@@ -5487,6 +5798,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             type: "STATUS_CHANGED",
             contextKey,
             status: "connected",
+            stopReason: e.stop_reason,
           })
           // Detect pending question from tool calls in the completed turn
           const turnConn = storeRef.current.connections.get(contextKey)
@@ -5798,6 +6110,25 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             },
           })
           break
+        case "prompt_suggestion":
+          flushStreamingQueue(contextKey)
+          dispatch({
+            type: "PROMPT_SUGGESTION",
+            contextKey,
+            text: e.text?.trim() || null,
+          })
+          break
+        case "remote_control":
+          // After the reply it follows, which can still be in the stream queue.
+          flushStreamingQueue(contextKey)
+          dispatch({
+            type: "REMOTE_CONTROL",
+            contextKey,
+            remoteControl: e.remote_control
+              ? { session_url: e.remote_control.session_url ?? null }
+              : null,
+          })
+          break
       }
     },
     [
@@ -5860,6 +6191,41 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
     [dispatch]
   )
 
+  /**
+   * Catch a desktop surface up, right after it hydrated and was routed, on
+   * what arrived for its connection while the snapshot was in flight — in seq
+   * order, the snapshot's own seq deduping whatever it already covered:
+   *   - the unmapped buffer: events NO surface routed, applied as a first
+   *     delivery (`applyMappedEnvelope` — one-shot effects, subscriber
+   *     fan-out);
+   *   - `echoes` (`beginHydrationEchoes`): events another surface already
+   *     handled, applied to this one's state only, exactly as the listener
+   *     applies them to a second route.
+   */
+  const applyHydrationBacklog = useCallback(
+    (contextKey: string, connectionId: string, echoes: EventEnvelope[]) => {
+      const backlog = [
+        ...consumeBufferedEvents(connectionId).map((envelope) => ({
+          envelope,
+          echo: false,
+        })),
+        ...echoes.map((envelope) => ({ envelope, echo: true })),
+      ].sort((a, b) => a.envelope.seq - b.envelope.seq)
+      for (const { envelope, echo } of backlog) {
+        if (!echo) {
+          applyMappedEnvelope(contextKey, envelope)
+          continue
+        }
+        const conn = storeRef.current.connections.get(contextKey)
+        if (conn && envelope.seq <= conn.lastAppliedSeq) continue
+        lastActivityRef.current.set(contextKey, Date.now())
+        handleMappedEventRef.current(contextKey, envelope, true)
+        dispatch({ type: "EVENT_APPLIED", contextKey, seq: envelope.seq })
+      }
+    },
+    [applyMappedEnvelope, consumeBufferedEvents, dispatch]
+  )
+
   // Re-seed `DelegationProvider` bindings from a snapshot's active_delegations.
   // `delegation_started` / `delegation_completed` are transient — they mutate
   // no SessionState field, so they are NOT in `to_snapshot()` and (on the
@@ -5873,6 +6239,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
   // `lastAppliedSeq` / trip the seq-dedup. Idempotent with any live/replayed
   // event for the same `parent_tool_use_id` (DelegationProvider overwrites the
   // binding and `attachDelegationChild` early-returns when already attached).
+  //
+  // Each seed is flagged `seededFromSnapshot`: the child it names is already
+  // mid-turn, so a DelegationProvider attaching it for the first time hydrates
+  // it from its own snapshot. On the desktop firehose nothing else would carry
+  // what it did before this client attached — including a permission it is
+  // parked on, which would then be unanswerable from here.
   const seedDelegationsFromSnapshot = useCallback(
     (
       connectionId: string,
@@ -5887,7 +6259,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       for (const envelope of envelopes) {
         for (const ref of eventSubscribersRef.current) {
           try {
-            ref.current(envelope)
+            ref.current(envelope, { seededFromSnapshot: true })
           } catch (err) {
             console.error(
               "[acp-context] delegation seed subscriber threw:",
@@ -6054,6 +6426,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           // so the user sees the conversation tab go away rather than
           // staring at stale state forever.
           attachSubscriptionsRef.current.delete(contextKey)
+          // Still in a turn here: the turn ended without this client — a
+          // connection that ends while attached reports its status first, so
+          // this is a re-attach that found nothing left (the idle sweep takes
+          // a connection nobody touches once its turn is over).
+          const gone = storeRef.current.connections.get(contextKey)
+          if (gone?.status === "prompting") noteTurnEndedUnseen(gone)
           // The composer that survives this is exactly the one whose Reconnect
           // button has to resume the session rather than start a new one.
           captureIdentityBeforeRemoval(contextKey)
@@ -6120,6 +6498,12 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       if (!routes || routes.size === 0) {
         bufferUnmappedEvent(envelope)
         return
+      }
+      // Routed elsewhere while a surface of this connection is still
+      // hydrating: keep it for that one too (`hydrationEchoesRef`).
+      const hydrating = hydrationEchoesRef.current.get(envelope.connection_id)
+      if (hydrating) {
+        for (const echoes of hydrating) echoes.push(envelope)
       }
 
       // Deliver to EVERY surface routing this connection (see
@@ -6360,6 +6744,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         // strip is actively showing as running. Mirrors the backend's
         // `has_active_background_work`, which ORs the two the same way.
         if (liveAsyncTasks(conn.asyncTasks).length > 0) continue
+        // Claude Code's Remote Control runs in the agent CLI: disconnecting
+        // would end the session the user handed to claude.ai/code or a phone.
+        // The backend sweep spares it too (`sweep_idle`).
+        if (conn.remoteControl) continue
         const lastActive = lastActivityRef.current.get(contextKey) ?? 0
         if (now - lastActive > CONNECTION_IDLE_TIMEOUT_MS) {
           toDisconnect.push({
@@ -6520,8 +6908,10 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // Desktop firehose: the global `acp://event` stream only carries FUTURE
       // events, so fetch a snapshot to backfill the in-flight turn, then route
       // this connection's events via the reverse-map and drain anything that
-      // arrived while the snapshot was in flight. Mirrors the legacy owner
-      // path in `connect()`.
+      // arrived while the snapshot was in flight — including what another
+      // surface already routing it received meanwhile. Mirrors the legacy
+      // owner path in `connect()`.
+      const backlog = beginHydrationEchoes(connectionId)
       let patch: import("@/lib/snapshot-denormalize").SnapshotPatch | null =
         null
       // `null` (as opposed to a thrown error) is the backend saying it holds no
@@ -6539,6 +6929,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
           e
         )
       }
+      backlog.stop()
       // Detach race: the tab may have disconnected (disconnect() removed the
       // entry) while the snapshot fetch was in flight. Re-check the store still
       // holds THIS viewer connection BEFORE applying the snapshot, seeding
@@ -6577,15 +6968,13 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
         )
       }
       bindConnectionRoute(connectionId, contextKey)
-      for (const env of consumeBufferedEvents(connectionId)) {
-        applyMappedEnvelope(contextKey, env)
-      }
+      applyHydrationBacklog(contextKey, connectionId, backlog.echoes)
       return true
     },
     [
-      applyMappedEnvelope,
+      applyHydrationBacklog,
+      beginHydrationEchoes,
       bindConnectionRoute,
-      consumeBufferedEvents,
       dispatch,
       releaseConnectionRoute,
       seedDelegationsFromSnapshot,
@@ -7752,7 +8141,9 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
       // Mid-turn attach: the firehose carries only future events, so backfill
       // the turn already in flight from a snapshot FIRST, then route (same
       // order as `connectAsViewer` — anything that lands while the fetch is in
-      // flight stays in the unmapped buffer and is deduped by seq on drain).
+      // flight is kept, in the unmapped buffer or as an echo of another
+      // surface's delivery, and deduped by seq once routed).
+      const backlog = beginHydrationEchoes(connectionId)
       void (async () => {
         let patch: import("@/lib/snapshot-denormalize").SnapshotPatch | null =
           null
@@ -7766,6 +8157,7 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             e
           )
         }
+        backlog.stop()
         // The viewer may have closed while the snapshot was in flight —
         // never hydrate or install routing for a detached child.
         const still = storeRef.current.connections.get(connectionId)
@@ -7792,11 +8184,14 @@ export function AcpConnectionsProvider({ children }: { children: ReactNode }) {
             patch.eventSeq
           )
         }
-        route()
+        bindConnectionRoute(connectionId, connectionId)
+        applyHydrationBacklog(connectionId, connectionId, backlog.echoes)
       })()
     },
     [
+      applyHydrationBacklog,
       applyMappedEnvelope,
+      beginHydrationEchoes,
       bindConnectionRoute,
       consumeBufferedEvents,
       dispatch,

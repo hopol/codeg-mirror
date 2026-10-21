@@ -1,4 +1,4 @@
-/** The seventeen agents codeg ships hand-written support for. */
+/** The nineteen agents codeg ships hand-written support for. */
 export type BuiltinAgentType =
   | "claude_code"
   | "codex"
@@ -17,6 +17,8 @@ export type BuiltinAgentType =
   | "antigravity"
   | "kiro"
   | "zcode"
+  | "trae"
+  | "command_code"
 
 /**
  * Which agent backs a conversation.
@@ -598,6 +600,15 @@ export interface DbConversationSummary {
    *  worktree path it originally ran in. Drives the "source worktree removed"
    *  badge. */
   origin_cwd?: string | null
+  /** The assistant a delegation child ran as, and its name when the
+   *  delegation started (off the child row's snapshot). Absent on every other
+   *  row. Prefer the assistant store's current name when it knows the id. */
+  assistant_id?: number
+  assistant_name?: string
+  /** Where the conversation was started from, when not the window: `"cli"`
+   *  for a `codeg-cli` run. Absent on every other row; another value (from a
+   *  newer build) is shown as nothing. */
+  source?: string | null
   /**
    * Ids of the {@link ConversationTagDetail tags} on this conversation,
    * ascending. Absent when it has none (the backend omits an empty list). May
@@ -1103,6 +1114,8 @@ export const AGENT_DISPLAY_ORDER: BuiltinAgentType[] = [
   "antigravity",
   "kiro",
   "zcode",
+  "trae",
+  "command_code",
 ]
 
 const AGENT_DISPLAY_ORDER_INDEX = new Map<AgentType, number>(
@@ -1139,6 +1152,8 @@ export const ALL_AGENT_TYPES: BuiltinAgentType[] = [
   "antigravity",
   "kiro",
   "zcode",
+  "trae",
+  "command_code",
 ]
 
 export const MODEL_PROVIDER_AGENT_TYPES: BuiltinAgentType[] = [
@@ -1452,6 +1467,8 @@ export const AGENT_LABELS: Record<BuiltinAgentType, string> = {
   antigravity: "Google Antigravity",
   kiro: "Kiro CLI",
   zcode: "ZCode",
+  trae: "TRAE CLI",
+  command_code: "Command Code",
 }
 
 export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
@@ -1472,6 +1489,8 @@ export const AGENT_COLORS: Record<BuiltinAgentType, string> = {
   antigravity: "bg-[#1A73E8]",
   kiro: "bg-[#9046FF]",
   zcode: "bg-[#111827]",
+  trae: "bg-[#32F08C]",
+  command_code: "bg-black",
 }
 
 // ACP connection status (matches Rust ConnectionStatus)
@@ -1530,6 +1549,37 @@ export interface PermissionOptionInfo {
    */
   meta?: Record<string, unknown> | null
 }
+
+/** Command-line access on this runtime (Rust `cli_run::CliAccessStatus`). */
+export interface CliAccessStatus {
+  enabled: boolean
+  /** Listening, with the endpoint file published. */
+  running: boolean
+  /** The endpoint file this runtime publishes, whether or not it exists. */
+  endpointFile: string
+  /** Why access is on but not running. */
+  error?: string | null
+}
+
+/** Rust `CommandToolStatus`: the desktop app's `codeg-cli` on the user's
+ *  PATH (Settings → "Install command-line tool"). */
+export interface CliToolStatus {
+  /** `link`, `path`, `package` (on PATH already), or `none`. */
+  method: "link" | "path" | "package" | "none"
+  /** `codeg-cli`, or `codeg-cli-dev` for a development build. */
+  command: string
+  installed: boolean
+  location?: string
+  /** Another `codeg-cli` in the way, left as it is. */
+  conflict?: string
+  note?: string
+}
+
+// Who answered a permission request (Rust `PermissionAnswerOrigin`).
+export type PermissionAnswerOrigin =
+  | { kind: "user" }
+  | { kind: "chat_channel" }
+  | { kind: "cli_policy"; run_id: string }
 
 // --- ask_user_question (mirror of Rust `crate::acp::question`) ---
 
@@ -1661,12 +1711,124 @@ export interface AgentOptionsSnapshot {
    *  with no live session (the to-do task boxes) encode an attached image the
    *  way this agent takes it. Null when the agent advertised none. */
   prompt_capabilities?: PromptCapabilitiesInfo | null
+  /** The options the probe was asked to set but did not end up holding —
+   *  `model` here means the snapshot describes the agent's OTHER model, not
+   *  the one asked for (the applied options' `current_value` is rewritten to
+   *  the agent's own pick, so nothing else tells). Always sent by current
+   *  backends; absent only from one that predates it. */
+  unapplied_config_ids?: string[]
 }
 
 export interface AgentDelegationDefaults {
   mode_id?: string | null
   config_values: Record<string, string>
 }
+
+// ─── Assistants ────────────────────────────────────────────────────────────
+// Mirrors src-tauri/src/models/assistant.rs (snake_case wire form). An
+// assistant is a delegation preset the composer can @-mention: an identity, an
+// agent with EVERY option it advertises picked explicitly, and standing
+// instructions handed to the delegated child.
+
+/** Palette keys an avatar colour is picked from (not colours: the UI maps each
+ *  to its own light/dark treatment). Same list as the backend validates. */
+export const ASSISTANT_AVATAR_COLORS = [
+  "slate",
+  "red",
+  "orange",
+  "amber",
+  "green",
+  "teal",
+  "sky",
+  "blue",
+  "violet",
+  "pink",
+] as const
+export type AssistantAvatarColor = (typeof ASSISTANT_AVATAR_COLORS)[number]
+
+export type AssistantAvatar =
+  | { kind: "monogram"; color: AssistantAvatarColor }
+  | { kind: "emoji"; emoji: string; color: AssistantAvatarColor }
+  /** A cropped, downscaled `data:image/(png|jpeg|webp);base64,…` URL. */
+  | { kind: "image"; data_url: string }
+
+export type AssistantOptionKind = "select" | "boolean"
+
+/** One option of a saved selection, with the names the editor showed. */
+export interface AssistantOptionLabel {
+  id: string
+  kind: AssistantOptionKind
+  name: string
+  /** The picked value's display name. A boolean's is drawn from its value. */
+  value_label: string
+}
+
+/** The option list a selection was saved against. The settings list reads its
+ *  names without probing; the backend checks the selection is complete
+ *  against it. */
+export interface AssistantLabelSnapshot {
+  agent: string
+  mode: string | null
+  options: AssistantOptionLabel[]
+}
+
+/** The agent, its complete selection and the option list — always submitted
+ *  together. */
+export interface AssistantAgentConfig {
+  agent_type: AgentType
+  agent_options: AgentDelegationDefaults
+  label_snapshot: AssistantLabelSnapshot
+}
+
+export interface AssistantInfo {
+  id: number
+  uid: string
+  name: string
+  description: string
+  avatar: AssistantAvatar
+  agent_type: AgentType
+  /** May arrive without `config_values` when empty (serde skips it). */
+  agent_options: AgentDelegationDefaults
+  label_snapshot: AssistantLabelSnapshot
+  instructions: string
+  enabled: boolean
+  sort_order: number
+  /** Bumped by every write; a client keeps the higher one of two copies. */
+  revision: number
+  created_at: string
+  updated_at: string
+  /** Set on a soft-deleted assistant. Tombstones are kept so history can
+   *  still draw it. */
+  deleted_at: string | null
+}
+
+export interface AssistantDraft {
+  name: string
+  description: string
+  avatar: AssistantAvatar
+  agent_config: AssistantAgentConfig
+  instructions: string
+  enabled: boolean
+}
+
+/** An edit: only the fields present change. */
+export interface AssistantPatch {
+  name?: string
+  description?: string
+  avatar?: AssistantAvatar
+  agent_config?: AssistantAgentConfig
+  instructions?: string
+  enabled?: boolean
+}
+
+/** Payload for `assistant://changed` — always whole rows. Mirrors the Rust
+ *  `AssistantChange` (serde `tag = "kind"`). `resync`: re-read the list. */
+export type AssistantChange =
+  | { kind: "upsert"; assistant: AssistantInfo }
+  | { kind: "reordered"; assistants: AssistantInfo[] }
+  | { kind: "resync" }
+
+export const ASSISTANT_CHANGED_EVENT = "assistant://changed"
 
 // ─── Automations ───────────────────────────────────────────────────────────
 // Mirrors src-tauri/src/models/automation.rs. Wire form is snake_case (serde
@@ -1850,6 +2012,12 @@ export interface WorkTask {
   /** Planned start of a to-do task (ISO); null = no plan. Consumed the moment
    *  the task is claimed, by the scheduler or by hand. */
   scheduled_at: string | null
+  /** The user put this reviewed / failed task aside to handle later (ISO
+   *  instant; "以后处理"): the board files it under Done and the attention badge
+   *  stops counting it, while it stays as resumable as it was. Cleared by every
+   *  way out of review / failed — a follow-up, retry, merge, completion or
+   *  cancel. Absent/null = not put aside (read it through `isDeferred`). */
+  deferred_at?: string | null
   /** Forge provenance ('forge_issue' | 'forge_pr'); absent = not forge-sourced. */
   source_kind?: string | null
   /** Canonical source key ({provider}:{host}:{owner_repo}:{kind}:{number}). */
@@ -1890,6 +2058,9 @@ export interface ForgeSourceMeta {
   head_repo?: string | null
   /** URL of the PR created by the delivery acceptance path (P1). */
   result_pr?: string | null
+  /** PR head the task's last push-back went onto (where the PR ended below
+   *  the task's own work); absent until a push-back. */
+  pushed_onto?: string | null
   /** The trigger dialog's write-back answer, frozen at trigger time. Absent on
    *  rows minted before the choice lived here — those stay silent. */
   writeback?: boolean | null
@@ -2188,6 +2359,12 @@ export interface ForgeRemote {
   server_host: string
   owner_repo: string
   remote_url: string
+  /** The instance's web root — scheme, host, port and mount path — as the
+   *  account the backend reads this host with spells it (`https://{host}`
+   *  when there is none). What an SSH remote's repository link is built on.
+   *  Absent from a server that predates the field — a remote codeg-server can
+   *  be older than the app connected to it. */
+  web_origin?: string
   /** Which forge this host is — decided by the backend from the configured
    *  accounts and the hostname, never chosen here. */
   provider: ForgeProviderId
@@ -2204,6 +2381,9 @@ export interface ForgeTaskLink {
   source_key: string
   task_id: number
   status: WorkTaskStatus
+  /** The task was put aside to handle later (see `WorkTask.deferred_at`) —
+   *  the chip names that instead of its review / failure. Absent = false. */
+  deferred?: boolean
   verdict: string | null
   updated_at: string
 }
@@ -2664,6 +2844,17 @@ export interface AvailableCommandInfo {
   input_hint?: string | null
 }
 
+/**
+ * Claude Code's Remote Control for a session that has it on (mirror of Rust
+ * `RemoteControlInfo`): the session can be continued from claude.ai/code or the
+ * Claude app on a phone for as long as the agent CLI runs.
+ */
+export interface RemoteControlInfo {
+  /** The remote session's claude.ai/code URL; `null` when Claude Code turned
+   *  Remote Control on without returning one. */
+  session_url: string | null
+}
+
 export interface SessionUsageUpdateInfo {
   used: number
   size: number
@@ -2698,6 +2889,11 @@ export interface ToolCallImageWire {
  * notification names its `Bash` call too, whose card has no marker to flip (the
  * store leaves it alone); absent when the notification names no call (an MCP
  * call moved to the background).
+ *
+ * `interim` (absent unless true) marks a notification whose note says the
+ * sub-agent will notify again: it stopped while background work of its own
+ * still runs, or it is being resumed. Its result may be interim, it is not the
+ * task's end, and it raises no "finished" notification.
  */
 export interface BackgroundSettledInfo {
   task_id: string
@@ -2705,6 +2901,7 @@ export interface BackgroundSettledInfo {
   summary?: string | null
   tool_use_id?: string | null
   result?: string | null
+  interim?: boolean
 }
 
 export type AcpEvent =
@@ -2770,6 +2967,10 @@ export type AcpEvent =
   | {
       type: "permission_resolved"
       request_id: string
+      /** The option that took effect; absent when the request was withdrawn or drained. */
+      option_id?: string
+      /** Who gave the answer that took effect; absent exactly when `option_id` is. */
+      origin?: PermissionAnswerOrigin
     }
   | {
       /**
@@ -2978,6 +3179,27 @@ export type AcpEvent =
       size: number
     }
   /**
+   * The prompt the agent predicts the user will send next (claude-agent-acp
+   * 0.92.0's `_meta.promptSuggestions`), offered as gray text in the empty
+   * composer; Tab fills it in. `null` withdraws the one held. Current state,
+   * like `usage_update`: the snapshot carries the last one, and a new prompt
+   * clears it.
+   */
+  | {
+      type: "prompt_suggestion"
+      text: string | null
+    }
+  /**
+   * Claude Code's Remote Control turned on (an object) or off (`null`), read
+   * from claude-agent-acp 0.93.0's reply to a `/remote-control` prompt.
+   * Current state, like `prompt_suggestion`: the snapshot carries it while it
+   * is on.
+   */
+  | {
+      type: "remote_control"
+      remote_control: RemoteControlInfo | null
+    }
+  /**
    * Out-of-turn activity surfaced from the agent's own session transcript by
    * the backend watcher (Claude only): async sub-agent / background-shell
    * `<task-notification>` completions, the agent's continued work after them,
@@ -3014,6 +3236,10 @@ export type AcpEvent =
       task_preview?: string | null
       /** Broker-minted task id (the `task_id=` embedded in the running ack). */
       task_id?: string | null
+      /** The assistant the child runs as (`agent_type` is then its agent).
+       *  Absent for a plain agent delegation. */
+      assistant_id?: number | null
+      assistant_name?: string | null
     }
   /**
    * The child sub-session has finished (or errored / timed out / been
@@ -3031,6 +3257,9 @@ export type AcpEvent =
        *  snapshot replay) can bind the correct agent instead of a default. */
       agent_type: AgentType
       result: DelegationResultSummary
+      /** Mirrors `delegation_started`'s assistant identity. */
+      assistant_id?: number | null
+      assistant_name?: string | null
     }
   /**
    * The user's submitted prompt, broadcast on the connection stream so OTHER
@@ -3247,6 +3476,9 @@ export interface ActiveDelegationState {
    *  hosts whose tool call `raw_input` never carries the arguments). */
   task_preview?: string | null
   task_id?: string | null
+  /** The assistant the child runs as, mirrored for the same reason. */
+  assistant_id?: number | null
+  assistant_name?: string | null
 }
 
 /** Lifecycle of a live-feedback note (mirror of Rust `FeedbackStatus`). */
@@ -3503,6 +3735,12 @@ export interface LiveSessionSnapshot {
   config_options: SessionConfigOptionInfo[] | null
   prompt_capabilities: PromptCapabilitiesInfo | null
   usage: SessionUsageUpdateInfo | null
+  /** The follow-up prompt the agent last predicted (see the
+   *  `prompt_suggestion` event). Absent when there is none. */
+  prompt_suggestion?: string | null
+  /** Claude Code's Remote Control while it is on (see the `remote_control`
+   *  event). Absent when it is off. */
+  remote_control?: RemoteControlInfo | null
   fork_supported: boolean
   available_commands: AvailableCommandInfo[]
   selectors_ready: boolean
@@ -3737,6 +3975,11 @@ export interface GrokSettings {
   custom_api_backend: string | null
   /** [model.<id>].context_window — context size in tokens. */
   custom_context_window: number | null
+  /** [model.<id>].reasoning_efforts — the levels the custom model declares,
+   * each the lowercased `value` Grok sends to the provider, in file order.
+   * Empty when absent: Grok then only has its own model catalog's levels for
+   * this id (never the custom base_url's model list). */
+  custom_reasoning_efforts: string[]
   /** [session].auto_compact_threshold_percent — 0–100 (Grok default 85). */
   auto_compact_threshold_percent: number | null
 }
@@ -3754,6 +3997,11 @@ export interface GrokStructuredConfig {
   customApiKey: string | null
   customApiBackend: string | null
   customContextWindow: number | null
+  /** The custom model's reasoning_efforts levels. Unlike the fields above,
+   * null leaves the key as it is (the panel sends levels only once its chips
+   * moved, so a list typed into the raw editor survives); an empty list
+   * removes it. */
+  customReasoningEfforts: string[] | null
   autoCompactThresholdPercent: number | null
 }
 
@@ -4301,6 +4549,8 @@ export type McpAppType =
   | "antigravity"
   | "kiro"
   | "zcode"
+  | "trae"
+  | "command_code"
   | "pi"
 
 export interface LocalMcpServer {
@@ -4534,6 +4784,27 @@ export interface GitConflictFileVersions {
 
 export interface GitCommitResult {
   committed_files: number
+}
+
+/** How the commit message generator runs (`commit_message` on the backend).
+ *  With no agent it follows the active session, then the folder's default. */
+/** How commit messages are written: globally, or for one project folder,
+ *  whose own settings replace the global ones whole. */
+export interface CommitMessageSettings {
+  /** The agent that writes them with every option it offers picked — an
+   *  assistant's kind of selection. `null` follows the active session. */
+  agent: AssistantAgentConfig | null
+  /** Standing instructions, e.g. "write in Chinese". */
+  instructions: string
+  /** Commit as soon as the message is written. */
+  auto_commit: boolean
+}
+
+export interface GeneratedCommitMessage {
+  message: string
+  agent_type: AgentType
+  /** The settings the run used want the message committed right away. */
+  auto_commit: boolean
 }
 
 export interface GitRemote {

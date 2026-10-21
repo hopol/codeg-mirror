@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import type {
+  CancelledTurnReports,
   LiveContentBlock,
   LiveMessage,
   ToolCallInfo,
@@ -119,6 +120,8 @@ export interface PendingBackgroundSettlement {
   status: string
   summary: string | null
   result: string | null
+  /** See `BackgroundSettledInfo.interim`. */
+  interim?: boolean
 }
 
 /**
@@ -182,6 +185,11 @@ export interface ConversationRuntimeSession {
   // the launching turn promotes into `localTurns` (see
   // `PendingBackgroundSettlement`). Drained by `COMPLETE_TURN`.
   pendingBackgroundSettlements: PendingBackgroundSettlement[]
+
+  // A stopped turn's late tool-call reports that arrived while the turn was
+  // still the live message (see `APPLY_CANCELLED_TURN_REPORTS`). Applied and
+  // cleared by `COMPLETE_TURN`.
+  pendingCancelledTurnReports: CancelledTurnReports | null
 
   // Temporary state
   optimisticTurns: MessageTurn[]
@@ -406,6 +414,15 @@ type Action =
       settlement: PendingBackgroundSettlement
     }
   | {
+      // A stopped turn with the reports the agent sent after it ended folded
+      // in (`ConnectionState.cancelledTurn`): settle the promoted cards of the
+      // calls it left open (`applyLateToolCallReports`), or hold the reports
+      // for `COMPLETE_TURN` while the turn is still the live message.
+      type: "APPLY_CANCELLED_TURN_REPORTS"
+      conversationId: number
+      reports: CancelledTurnReports
+    }
+  | {
       type: "APPEND_OPTIMISTIC_TURN"
       conversationId: number
       turn: MessageTurn
@@ -499,6 +516,7 @@ function createEmptySession(
     localTurns: [],
     backgroundTurns: [],
     pendingBackgroundSettlements: [],
+    pendingCancelledTurnReports: null,
     optimisticTurns: [],
     liveMessage: null,
     syncState: "idle",
@@ -2045,6 +2063,8 @@ function applyBackgroundSettlementToTurns(
   turns: MessageTurn[],
   settlement: PendingBackgroundSettlement
 ): { turns: MessageTurn[]; matched: boolean; changed: boolean } {
+  // Same payload, key order included, as the detail parse writes
+  // (`apply_background_lifecycle`): `interim` only when set.
   const marker =
     BACKGROUND_TASK_MARKER +
     JSON.stringify({
@@ -2052,6 +2072,7 @@ function applyBackgroundSettlementToTurns(
       status: settlement.status,
       summary: settlement.summary,
       result: settlement.result,
+      ...(settlement.interim ? { interim: true } : {}),
     })
   let matched = false
   let changed = false
@@ -2077,6 +2098,86 @@ function applyBackgroundSettlementToTurns(
     return turnChanged ? { ...turn, blocks: nextBlocks } : turn
   })
   return { turns: changed ? nextTurns : turns, matched, changed }
+}
+
+type ToolUseBlock = Extract<ContentBlock, { type: "tool_use" }>
+type ToolResultBlock = Extract<ContentBlock, { type: "tool_result" }>
+
+/**
+ * Settle a promoted turn's cards from the reports the agent sent after the turn
+ * ended. `reports.message` is the turn's message with those reports folded in
+ * (`ConnectionState.cancelledTurn`), so rebuilding it the way `COMPLETE_TURN`
+ * promotes a message yields every card exactly as the turn would have shown it
+ * had the reports landed inside it — a sub-agent's card with its child calls'
+ * outcomes included. The card of each call the turn left open
+ * (`reports.openCalls`) takes its rebuilt `tool_use` and `tool_result`, again
+ * on every later application, so a sub-agent card that settled first still
+ * takes its child's closing. Any other card is never revised: a call that
+ * settled inside the turn, such as an async sub-agent's launch, keeps what was
+ * written on its card since (the lifecycle marker `RESOLVE_BACKGROUND_TASK`
+ * writes). Returns `turns` itself when nothing changed.
+ */
+export function applyLateToolCallReports(
+  conversationId: number,
+  turns: MessageTurn[],
+  reports: CancelledTurnReports
+): MessageTurn[] {
+  const rebuilt = new Map<
+    string,
+    { use: ToolUseBlock; result: ToolResultBlock | undefined }
+  >()
+  for (const turn of buildStreamingTurnsFromLiveMessage(
+    conversationId,
+    reports.message
+  ).turns) {
+    for (const block of turn.blocks) {
+      if (block.type !== "tool_use" || !block.tool_use_id) continue
+      const id = block.tool_use_id
+      if (!reports.openCalls.has(id)) continue
+      rebuilt.set(id, {
+        use: block,
+        result: turn.blocks.find(
+          (b): b is ToolResultBlock =>
+            b.type === "tool_result" && b.tool_use_id === id
+        ),
+      })
+    }
+  }
+  if (rebuilt.size === 0) return turns
+
+  let changed = false
+  const nextTurns = turns.map((turn) => {
+    let blocks: MessageTurn["blocks"] | null = null
+    for (const block of turn.blocks) {
+      if (block.type !== "tool_use" || !block.tool_use_id) continue
+      const card = rebuilt.get(block.tool_use_id)
+      if (!card) continue
+      const current: MessageTurn["blocks"] = blocks ?? turn.blocks
+      const resultIndex = current.findIndex(
+        (b) => b.type === "tool_result" && b.tool_use_id === block.tool_use_id
+      )
+      const result = resultIndex === -1 ? undefined : current[resultIndex]
+      if (
+        JSON.stringify(card.use) === JSON.stringify(block) &&
+        (card.result === undefined ||
+          JSON.stringify(card.result) === JSON.stringify(result))
+      ) {
+        continue
+      }
+      const next: MessageTurn["blocks"] = current.slice()
+      const useIndex = next.indexOf(block)
+      next[useIndex] = card.use
+      if (card.result) {
+        if (resultIndex === -1) next.splice(useIndex + 1, 0, card.result)
+        else next[resultIndex] = card.result
+      }
+      blocks = next
+    }
+    if (!blocks) return turn
+    changed = true
+    return { ...turn, blocks }
+  })
+  return changed ? nextTurns : turns
 }
 
 function reducer(
@@ -2420,6 +2521,20 @@ function reducer(
             : stillPending
       }
 
+      // A stopped turn's reports that arrived before this promotion (see
+      // `APPLY_CANCELLED_TURN_REPORTS`), when this promotes that turn. Held
+      // reports of any other message are dropped below: that message was
+      // replaced before it was promoted, and its turn is read from the
+      // transcript, which records how each call ended.
+      const heldReports = current.pendingCancelledTurnReports
+      if (heldReports && heldReports.message.id === sourceLiveMessage?.id) {
+        promoted = applyLateToolCallReports(
+          action.conversationId,
+          promoted,
+          heldReports
+        )
+      }
+
       return updateSessionInState(state, action.conversationId, () => ({
         ...current,
         localTurns: promoted,
@@ -2434,6 +2549,7 @@ function reducer(
         // reply is already persisted.
         lastTurnOwned: current.syncState === "awaiting_persist",
         pendingBackgroundSettlements: remainingSettlements,
+        pendingCancelledTurnReports: null,
       }))
     }
 
@@ -2539,6 +2655,34 @@ function reducer(
       return updateSessionInState(state, action.conversationId, (s) => ({
         ...s,
         pendingBackgroundSettlements: [...withoutDup, action.settlement],
+      }))
+    }
+
+    case "APPLY_CANCELLED_TURN_REPORTS": {
+      // Only meaningful for an open session: a closed tab renders from the
+      // disk parse, which records how each call ended.
+      const current = state.byConversationId.get(action.conversationId)
+      if (!current) return state
+      // Not promoted yet (the panel promotes on the status edge, ahead of any
+      // report, but the delegated-child view promotes from an effect): hold
+      // the reports for `COMPLETE_TURN`, which applies them to whatever copy
+      // of the message it is handed.
+      if (current.liveMessage?.id === action.reports.message.id) {
+        if (current.pendingCancelledTurnReports === action.reports) return state
+        return updateSessionInState(state, action.conversationId, (s) => ({
+          ...s,
+          pendingCancelledTurnReports: action.reports,
+        }))
+      }
+      const localTurns = applyLateToolCallReports(
+        action.conversationId,
+        current.localTurns,
+        action.reports
+      )
+      if (localTurns === current.localTurns) return state
+      return updateSessionInState(state, action.conversationId, (s) => ({
+        ...s,
+        localTurns,
       }))
     }
 
@@ -2803,6 +2947,8 @@ function reducer(
         // the plain spread would silently drop the target's.
         pendingOutOfTurnContent:
           from.pendingOutOfTurnContent || to.pendingOutOfTurnContent,
+        pendingCancelledTurnReports:
+          from.pendingCancelledTurnReports ?? to.pendingCancelledTurnReports,
       }
 
       const nextByConversationId = new Map(state.byConversationId)
@@ -2974,6 +3120,14 @@ export interface RuntimeActions {
     conversationId: number,
     liveMessage?: LiveMessage | null
   ) => void
+  /**
+   * Record that the turn running in the conversations bound to agent session
+   * `externalId` ended while this client was not receiving its events (a
+   * reconnect's snapshot, or the connection gone). Their next `completeTurn`
+   * then reads the reply from the transcript instead of settling on the part
+   * that arrived before the gap. See `unseenTurnEnds`.
+   */
+  markTurnEndUnseen: (externalId: string) => void
   appendOptimisticTurn: (
     conversationId: number,
     turn: MessageTurn,
@@ -2989,6 +3143,12 @@ export interface RuntimeActions {
   resolveBackgroundTask: (
     conversationId: number,
     settlement: PendingBackgroundSettlement
+  ) => void
+  /** Settle a stopped turn's cards from the reports the agent sent after the
+   *  turn ended (see `APPLY_CANCELLED_TURN_REPORTS`). */
+  applyCancelledTurnReports: (
+    conversationId: number,
+    reports: CancelledTurnReports
   ) => void
   setLiveMessage: (
     conversationId: number,
@@ -3166,6 +3326,91 @@ const viewerDetailSyncCancels = new Map<number, () => void>()
 function cancelViewerDetailSync(conversationId: number): void {
   const cancel = viewerDetailSyncCancels.get(conversationId)
   if (cancel) cancel()
+}
+
+// ─── A turn that ended while this client was away ────────────────────────
+// `completeTurn` promotes the live copy of a reply and never reads the
+// transcript (see the note there): a client that applied every delta of the
+// turn already holds the whole reply. One that was not listening when the turn
+// ended does not — a phone that put the page in the background mid-reply, a
+// laptop that slept (#386). Its re-attach learns that the turn is over from a
+// SNAPSHOT (a gap too long to replay), and a finished turn's snapshot carries no
+// live message, because the backend drops it at TurnComplete; or the connection
+// is gone altogether, idle-swept while nobody watched. The prompting → idle edge
+// fires all the same, and what it promotes is only the part of the reply that
+// arrived before the socket dropped, settled as if it were the whole reply. No
+// later read ever brought in the rest: only reloading the page did.
+//
+// The connections layer is what can tell such an ending from a watched one, so
+// it marks the session (`markTurnEndUnseen`). Its next `completeTurn` still
+// promotes what it has, so the head of the reply stays on screen, and then
+// reads the reply from the transcript, polled: a reconnect can land just as the
+// turn ends, before the agent has written it.
+//
+// Keyed by runtime conversation id, consumed by `completeTurn`.
+const unseenTurnEnds = new Set<number>()
+const UNSEEN_TURN_RESYNC_DELAYS_MS = [0, 500, 1500, 3000, 6000, 10000] as const
+const unseenTurnResyncCancels = new Map<number, () => void>()
+
+function cancelUnseenTurnResync(conversationId: number): void {
+  unseenTurnResyncCancels.get(conversationId)?.()
+}
+
+/**
+ * Whether a fresh read of the transcript holds everything `promoted` (what the
+ * promotion left in `localTurns`, all of which the read replaces) stood for,
+ * down to the reply of the turn that ended while this client was away.
+ *
+ * That reply is the last turn before any prompt the backend reports as still
+ * running — a queued follow-up can start one the moment the turn is promoted —
+ * and a user turn there means the agent has not written it yet. A reply there
+ * is not enough on its own: a transcript that has not recorded the ended round
+ * at all ends on an EARLIER round's reply, and loading it would take this
+ * round's prompt and partial reply off the screen. So every prompt the batch
+ * holds must be on disk too: counted from the batch's start where this window
+ * contains it; otherwise (start unknown, or the window was reset past it) the
+ * last prompt on disk must be the ended round's own. A batch holding no prompt
+ * is a reply whose prompt was already history — a viewer that attached
+ * mid-turn — and the reply follows it.
+ */
+function holdsUnseenTurnReply(
+  detail: DbConversationDetail,
+  batchBoundaryIndex: number | null,
+  promoted: MessageTurn[]
+): boolean {
+  const turns = detail.turns
+  const inFlightId = detail.in_flight_user_turn_id ?? null
+  const end =
+    inFlightId === null
+      ? turns.length
+      : turns.findIndex((t) => t.role === "user" && t.id === inFlightId)
+  if (end <= 0 || turns[end - 1].role === "user") return false
+  const prompts = promoted.filter((t) => t.role === "user")
+  const endedPrompt = prompts[prompts.length - 1]
+  if (!endedPrompt) return true
+  const start =
+    batchBoundaryIndex === null
+      ? -1
+      : batchBoundaryIndex - turnsOffsetOf(detail)
+  if (start >= 0) {
+    let onDisk = 0
+    for (let i = start; i < end; i++) {
+      if (turns[i].role === "user") onDisk++
+    }
+    return onDisk >= prompts.length
+  }
+  for (let i = end - 1; i >= 0; i--) {
+    if (turns[i].role !== "user") continue
+    return userTurnContentKey(turns[i]) === userTurnContentKey(endedPrompt)
+  }
+  return false
+}
+
+function holdsExactlyTurns(
+  turns: MessageTurn[],
+  ids: ReadonlySet<string>
+): boolean {
+  return turns.length === ids.size && turns.every((t) => ids.has(t.id))
 }
 
 // Resolve the RUNTIME-session key for a `conversation://changed` nudge, which
@@ -4335,6 +4580,113 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
     attempt(0)
   }
 
+  // Replace what `completeTurn` just promoted for a turn that ended while this
+  // client was away (see `unseenTurnEnds`) with the reply read from the
+  // transcript. Commits only a read that holds every round the promotion left,
+  // down to that reply (`holdsUnseenTurnReply`); gives up, keeping the head as
+  // before, when the transcript never gets there. Never sets `detailLoading`:
+  // the head of the reply stays on screen while this reads.
+  const resyncUnseenTurnEnd = (conversationId: number): void => {
+    cancelUnseenTurnResync(conversationId)
+    const session = get().byConversationId.get(conversationId)
+    if (!session) return
+
+    // Everything the promotion left in `localTurns` — this reply's head and the
+    // earlier rounds of the batch — is on disk once the read holds them all, and
+    // the read replaces all of it, so all of it goes. A turn of a NEW prompt (a
+    // queued follow-up sent the moment this one settled) is in
+    // `optimisticTurns` / `liveMessage`, and the commit keeps those.
+    const promoted = session.localTurns
+    const staleIds = new Set(promoted.map((t) => t.id))
+    const batchBoundaryIndex = session.batchBoundaryIndex
+
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const cancel = (): void => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+      if (unseenTurnResyncCancels.get(conversationId) === cancel) {
+        unseenTurnResyncCancels.delete(conversationId)
+      }
+    }
+    unseenTurnResyncCancels.set(conversationId, cancel)
+
+    const retry = (n: number): void => {
+      if (n + 1 >= UNSEEN_TURN_RESYNC_DELAYS_MS.length) {
+        cancel()
+        return
+      }
+      timer = setTimeout(
+        () => attempt(n + 1),
+        UNSEEN_TURN_RESYNC_DELAYS_MS[n + 1]
+      )
+    }
+
+    let loadWaitedMs = 0
+    const attempt = (n: number): void => {
+      if (cancelled) return
+      const cur = get().byConversationId.get(conversationId)
+      // Gone (tab closed), or `localTurns` no longer what the promotion left: a
+      // load already replaced it (a reload), or a later turn was promoted on top
+      // of it, which a read taken now would show twice.
+      if (!cur || !holdsExactlyTurns(cur.localTurns, staleIds)) {
+        cancel()
+        return
+      }
+      // A load the view started is in flight; only its own result clears
+      // `detailLoading`, and reading now would void it. Wait for it, as
+      // `syncViewerDetail` does.
+      if (cur.detailLoading) {
+        if (loadWaitedMs >= VIEWER_DETAIL_SYNC_LOAD_WAIT_CAP_MS) {
+          cancel()
+          return
+        }
+        loadWaitedMs += VIEWER_DETAIL_SYNC_LOAD_WAIT_STEP_MS
+        timer = setTimeout(
+          () => attempt(n),
+          VIEWER_DETAIL_SYNC_LOAD_WAIT_STEP_MS
+        )
+        return
+      }
+      const fetchId = cur.dbConversationId ?? conversationId
+      if (fetchId <= 0) {
+        cancel()
+        return
+      }
+      const generation = bumpFetchGeneration(conversationId)
+      fetchDetailWindowed(fetchId, cur.detail)
+        .then((detail) => {
+          if (cancelled) return
+          const now = get().byConversationId.get(conversationId)
+          if (!now || !holdsExactlyTurns(now.localTurns, staleIds)) {
+            cancel()
+            return
+          }
+          // A later read owns the detail; this one may predate it.
+          if (
+            !isLatestGeneration(conversationId, generation) ||
+            !holdsUnseenTurnReply(detail, batchBoundaryIndex, promoted)
+          ) {
+            retry(n)
+            return
+          }
+          dispatch({
+            type: "FETCH_DETAIL_SUCCESS",
+            conversationId,
+            detail,
+            preserveLive: true,
+            dropLiveTurnIds: [...staleIds],
+          })
+          cancel()
+        })
+        .catch(() => {
+          if (!cancelled) retry(n)
+        })
+    }
+
+    attempt(0)
+  }
+
   const syncTurnMetadata = (
     dbConversationId: number,
     runtimeConversationId?: number
@@ -4590,7 +4942,27 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
       // the complete, correct render; a later cold detail fetch (opening the tab
       // again, etc.) reconciles it against the DB whenever that naturally
       // happens.
+      //
+      // Except for a turn that ended while this client was away: what it
+      // promotes then is only the head of the reply, so the reply is read from
+      // the transcript after all — polled until the read holds it, which is
+      // what the race above needs (see `unseenTurnEnds`).
+      const unseen = unseenTurnEnds.delete(conversationId)
       dispatch({ type: "COMPLETE_TURN", conversationId, liveMessage })
+      if (unseen) resyncUnseenTurnEnd(conversationId)
+    },
+    markTurnEndUnseen: (externalId) => {
+      for (const [conversationId, session] of get().byConversationId) {
+        if (session.externalId !== externalId) continue
+        // Only a session the coming promotion drains; one with no turn in its
+        // live buffers did not stream this one.
+        if (
+          session.liveMessage === null &&
+          session.optimisticTurns.length === 0
+        )
+          continue
+        unseenTurnEnds.add(conversationId)
+      }
     },
     appendOptimisticTurn: (conversationId, turn, turnToken) =>
       dispatch({
@@ -4616,6 +4988,12 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
         conversationId,
         settlement,
       }),
+    applyCancelledTurnReports: (conversationId, reports) =>
+      dispatch({
+        type: "APPLY_CANCELLED_TURN_REPORTS",
+        conversationId,
+        reports,
+      }),
     setLiveMessage: (conversationId, liveMessage, isLive) =>
       dispatch({
         type: "SET_LIVE_MESSAGE",
@@ -4633,12 +5011,20 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
       }),
     setSyncState: (conversationId, syncState) =>
       dispatch({ type: "SET_SYNC_STATE", conversationId, syncState }),
-    migrateConversation: (fromConversationId, toConversationId) =>
+    migrateConversation: (fromConversationId, toConversationId) => {
+      // The mark follows the session it was made for (see `unseenTurnEnds`).
+      if (
+        fromConversationId !== toConversationId &&
+        unseenTurnEnds.delete(fromConversationId)
+      ) {
+        unseenTurnEnds.add(toConversationId)
+      }
       dispatch({
         type: "MIGRATE_CONVERSATION",
         fromConversationId,
         toConversationId,
-      }),
+      })
+    },
     setPendingCleanup: (conversationId, pendingCleanup) =>
       dispatch({ type: "SET_PENDING_CLEANUP", conversationId, pendingCleanup }),
     setAcpLoadError: (conversationId, error) =>
@@ -4659,9 +5045,15 @@ export const useConversationRuntimeStore = create<ConversationRuntimeStore>()((
       // also stop it on the next fire, but cancelling now drops the pending
       // timer immediately).
       cancelViewerDetailSync(conversationId)
+      unseenTurnEnds.delete(conversationId)
+      cancelUnseenTurnResync(conversationId)
       dispatch({ type: "REMOVE_CONVERSATION", conversationId })
     },
-    reset: () => dispatch({ type: "RESET" }),
+    reset: () => {
+      unseenTurnEnds.clear()
+      for (const cancel of [...unseenTurnResyncCancels.values()]) cancel()
+      dispatch({ type: "RESET" })
+    },
   }
 
   return {
@@ -4778,6 +5170,9 @@ export function resetConversationRuntimeStore(): void {
   olderPageRequests.clear()
   for (const cancel of viewerDetailSyncCancels.values()) cancel()
   viewerDetailSyncCancels.clear()
+  unseenTurnEnds.clear()
+  for (const cancel of [...unseenTurnResyncCancels.values()]) cancel()
+  unseenTurnResyncCancels.clear()
   for (const pending of pendingSessionReleases.values()) clearTimeout(pending)
   pendingSessionReleases.clear()
   timelineCache = new WeakMap()
