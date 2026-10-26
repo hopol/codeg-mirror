@@ -1,5 +1,5 @@
-commit=f00945edcbb68bf2ad6c2bfbe352d4835974c3a7
-timestamp=2026-10-21T06:57:42Z
+commit=95fd81df4374753c460b5cb0ed01de8f1ea24702
+timestamp=2026-10-26T07:21:36Z
 upstream_url=https://github.com/xintaofei/codeg
 upstream_branch=main
-version=0.38.0
+version=0.40.0

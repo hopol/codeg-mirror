@@ -29,7 +29,6 @@ import {
 import {
   createMessageTurnAdapter,
   groupGoalRuns,
-  mergeAdjacentToolGroups,
   mergeAdjacentDelegationStatusGroups,
   mergeAdjacentBackgroundTaskGroups,
   type AdaptedContentPart,
@@ -43,6 +42,7 @@ import { TurnStats } from "./turn-stats"
 import { LiveTurnStats } from "./live-turn-stats"
 import { ModelLabelProvider } from "./model-label-context"
 import { KnownInvocationsProvider } from "./known-invocations-context"
+import { DelegationStatusIndexProvider } from "./delegation-status-index-context"
 import { useTranscriptKnownInvocations } from "./use-transcript-known-invocations"
 import { ReplyArtifacts } from "./reply-artifacts"
 import { UserResourceLinks } from "./user-resource-links"
@@ -61,6 +61,11 @@ import {
   parseDelegateTaskId,
 } from "@/lib/delegation-card"
 import type { DelegationCardSource } from "@/hooks/use-delegation-card-model"
+import {
+  collectDelegationStatusTasks,
+  createDelegationStatusIndexer,
+  type DelegationStatusTaskRef,
+} from "@/lib/delegation-status-index"
 import {
   MessageThread,
   MessageThreadScrollButton,
@@ -463,9 +468,7 @@ export function singletonSourceTurns(turn: MessageTurn): MessageTurn[] {
 }
 
 // Collect the sub-agent delegations within a turn's adapted parts, recursing
-// through tool-groups and goal-runs (both kinds are normally standalone parts —
-// `isAgentLikeToolName` keeps them out of tool-groups — but we scan nested
-// containers defensively so a delegation is never missed).
+// into goal runs (a delegation made while a goal runs sits in the run's items).
 //
 // Two kinds qualify:
 //   - `delegate_to_agent`, which STARTED a sub-agent, keyed by its own
@@ -524,8 +527,6 @@ function collectDelegationSources(
           meta: part.meta ?? null,
         })
       }
-    } else if (part.type === "tool-group") {
-      collectDelegationSources(part.items, out, seenTaskIds)
     } else if (part.type === "goal-run") {
       collectDelegationSources(part.items, out, seenTaskIds)
     }
@@ -574,6 +575,35 @@ export function groupDelegationSources(
     delegationSourcesByGroup.set(group, sources)
   }
   return sources
+}
+
+// Per group as well, for the status index below: the rows a historical
+// group's status cards draw are read once.
+const delegationStatusTasksByGroup = new WeakMap<
+  ResolvedMessageGroup,
+  readonly DelegationStatusTaskRef[]
+>()
+
+/**
+ * The `get_delegation_status` task rows the thread's turns draw, turn by turn
+ * and in thread order — what the transcript's status index is folded from
+ * (`@/lib/delegation-status-index`), so that only a task's newest row carries
+ * the decision its sub-agent is parked on.
+ */
+export function threadDelegationStatusTasks(
+  items: readonly ThreadRenderItem[]
+): (readonly DelegationStatusTaskRef[])[] {
+  const out: (readonly DelegationStatusTaskRef[])[] = []
+  for (const item of items) {
+    if (item.kind !== "turn") continue
+    let tasks = delegationStatusTasksByGroup.get(item.group)
+    if (!tasks) {
+      tasks = collectDelegationStatusTasks(item.group.parts)
+      delegationStatusTasksByGroup.set(item.group, tasks)
+    }
+    if (tasks.length > 0) out.push(tasks)
+  }
+  return out
 }
 
 /** The sub-agents one message's round lists, in order — see
@@ -708,7 +738,8 @@ type AssistantTurnItem = Extract<ThreadRenderItem, { kind: "turn" }>
  * item FREEZES its members' `sourceTurns`, so any turn field the adapter's
  * cache ignores would be stale here forever (`source_turn_id`, which the fork
  * affordance reads, is in that tuple for exactly this reason). The keys embed
- * phase/id/index so ordering or phase drift invalidates too. A run
+ * role/id so ordering drift invalidates too; a member settling into history
+ * re-adapts (a new group) and completes, so phase drift does as well. A run
  * containing the streaming turn misses every batch by construction (the
  * streaming turn re-adapts per batch) — that residual rebuild is the point;
  * purely historical runs hit and keep their group/parts/sourceTurns
@@ -845,10 +876,10 @@ export function dedupeCompactionItems(
 
 /**
  * Collapse runs of consecutive assistant turn render items into a single
- * synthetic turn so tool-groups straddling a turn boundary fold into one
- * collapsible. Empty (no-content) turn items are treated as transparent and
- * do not break the run — that handles cases where parsers leave empty
- * placeholder turns between tool exchanges.
+ * synthetic turn, so a reply the agent split across turns (one per tool round
+ * trip) draws as one timeline. Empty (no-content) turn items are treated as
+ * transparent and do not break the run — that handles cases where parsers
+ * leave empty placeholder turns between tool exchanges.
  *
  * Exported for tests.
  */
@@ -898,12 +929,11 @@ export function mergeConsecutiveAssistantTurns(
       // the unfinished-run shimmer must stop. Mirror groupGoalRuns' per-turn
       // isStreaming gate at the merge layer.
       const mergedStreaming = buffer.some((it) => it.phase === "streaming")
-      // Fold tool-groups straddling the turn boundary, then collapse runs of
-      // single-poll delegation-status and background-task groups (each polling
-      // round is its own turn) into one merged card.
+      // Collapse runs of single-poll delegation-status and background-task
+      // groups (each polling round is its own turn) into one.
       const mergedParts = groupGoalRuns(
         mergeAdjacentBackgroundTaskGroups(
-          mergeAdjacentDelegationStatusGroups(mergeAdjacentToolGroups(allParts))
+          mergeAdjacentDelegationStatusGroups(allParts)
         ),
         mergedStreaming
       )
@@ -1454,15 +1484,17 @@ export function MessageListView({
         }
         groupCache.set(msg, group)
       }
-      // Include phase so a turn that briefly coexists across phases (e.g.
-      // a streaming turn that has just been promoted to localTurns while the
-      // liveMessage is still attached) doesn't collide with itself in the
-      // virtualized list, and role because the timeline dedup deliberately
-      // keeps different-role turns that share an id. NO positional index:
-      // paging in older history prepends items, and an index-bearing key
-      // would shift every existing row's identity — remounting the whole
-      // list and dropping the virtualizer's measurement cache mid-scroll.
-      const key = `${phase}-${role}-${msg.id}`
+      // Role and id: the timeline holds one turn per role and id (a streaming
+      // turn just promoted into localTurns while the liveMessage is still
+      // attached is deduped there, `dedupeTimeline`), and deliberately keeps
+      // different-role turns that share one. NO phase: a reply settling into
+      // history keeps its id, and a key that changed with the phase would
+      // remount the whole reply at the moment it finishes. NO positional
+      // index either: paging in older history prepends items, and an
+      // index-bearing key would shift every existing row's identity —
+      // remounting the whole list and dropping the virtualizer's measurement
+      // cache mid-scroll.
+      const key = `${role}-${msg.id}`
       // Hoist a compaction-only turn to its own standalone divider item so it
       // renders BETWEEN turns instead of being merged into (and wedged inside)
       // the preceding assistant reply by `mergeConsecutiveAssistantTurns`.
@@ -1499,7 +1531,7 @@ export function MessageListView({
     })
 
     // Collapse consecutive assistant turn render items into a single rendered
-    // turn, so tool-groups straddling a turn boundary fold into one collapsible.
+    // turn, so a reply split across turns draws as one timeline.
     // Compaction dividers are deduped FIRST: the live and persisted copies of
     // one compaction arrive under different ids, and only one of them should
     // reach the merge.
@@ -1734,6 +1766,19 @@ export function MessageListView({
   const subAgentOverlayKey = lastAssistantGroup
     ? `subagents-${lastAssistantGroup.id}`
     : `subagents-history-${conversationId}`
+
+  // Which status row of the thread speaks for each delegated task: only that
+  // one reaches the live sub-agent and carries the decision it is parked on,
+  // however many cards the agent's re-polls left. The indexer keeps its last
+  // result while no task's newest row changes, so a streaming batch that
+  // leaves them alone re-renders no row through the context.
+  const [indexDelegationStatus] = useState(() =>
+    createDelegationStatusIndexer()
+  )
+  const delegationStatusIndex = useMemo(
+    () => indexDelegationStatus(threadDelegationStatusTasks(threadItems)),
+    [indexDelegationStatus, threadItems]
+  )
 
   // --- Message navigator ------------------------------------------------------
   // Lifted scroll handle so the navigator — in the Session Details side panel,
@@ -2101,9 +2146,11 @@ export function MessageListView({
   return (
     <MarkdownImageProvider rootPath={resolvedImageRoot}>
       <ModelLabelProvider value={modelLabel}>
-        <KnownInvocationsProvider value={knownInvocations}>
-          {thread}
-        </KnownInvocationsProvider>
+        <DelegationStatusIndexProvider value={delegationStatusIndex}>
+          <KnownInvocationsProvider value={knownInvocations}>
+            {thread}
+          </KnownInvocationsProvider>
+        </DelegationStatusIndexProvider>
       </ModelLabelProvider>
     </MarkdownImageProvider>
   )

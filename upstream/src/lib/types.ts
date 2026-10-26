@@ -264,6 +264,13 @@ export type ContentBlock =
        */
       images?: ImageData[] | null
       /**
+       * The exit code of a command call's process, when the transcript keeps
+       * it as a field (pi, Cursor, Antigravity). Mirror of Rust
+       * `ContentBlock::ToolResult.exit_code`; absent means unknown, and the
+       * code is read from the output text instead.
+       */
+      exit_code?: number | null
+      /**
        * LIVE-stream data: the in-flight transcript of a native subagent —
        * a marker per child tool call, plus (Claude Code only) the text/
        * thinking chunks attributed to this Agent tool call via
@@ -1580,6 +1587,24 @@ export type PermissionAnswerOrigin =
   | { kind: "user" }
   | { kind: "chat_channel" }
   | { kind: "cli_policy"; run_id: string }
+
+/**
+ * One answered permission request, as a record about its tool call (Rust
+ * `ToolApprovalInfo`): live on the `tool_approval` event and the snapshot's
+ * `tool_approvals`, and kept by the backend for reopened conversations.
+ */
+export interface ToolApprovalInfo {
+  tool_call_id: string
+  /** The chosen option's ACP kind (`allow_once`, `allow_always`,
+   *  `reject_once`, `reject_always`), verbatim. */
+  option_kind: string
+  /** The chosen option's label in the agent's own words. */
+  option_name: string
+  /** `PermissionAnswerOrigin.kind` of whoever answered. */
+  origin: string
+  /** ISO timestamp. */
+  decided_at: string
+}
 
 // --- ask_user_question (mirror of Rust `crate::acp::question`) ---
 
@@ -2974,6 +2999,14 @@ export type AcpEvent =
     }
   | {
       /**
+       * What an answer decided about the card's tool call. Follows the
+       * `permission_resolved` that retired the card, only for answers.
+       */
+      type: "tool_approval"
+      approval: ToolApprovalInfo
+    }
+  | {
+      /**
        * Depth-only update: a new request queued up behind the visible card,
        * which publishes no `permission_request` of its own. Without this the
        * card's `queued` count would go stale.
@@ -3164,8 +3197,9 @@ export type AcpEvent =
        * The first three mean the session is gone. `"session_busy"` does not —
        * another live holder has it open (another Codex client — the app, the
        * CLI or an IDE extension — or, for about a minute after a fork, the
-       * forking session, until codex unloads the parent it closed), and it
-       * clears when that one lets go.
+       * forking session, until codex unloads the parent it closed; for Kimi
+       * Code, another Kimi process on the same home until it has been idle
+       * for 3 s), and it clears when that one lets go.
        */
       code: string
     }
@@ -3221,7 +3255,7 @@ export type AcpEvent =
    * A `delegate_to_agent` MCP tool call from the parent agent has spawned a
    * child sub-session and the child's prompt is in flight. Emitted as soon as
    * the broker registers the pending call. Frontend uses this to build the
-   * parent ↔ child mapping for inline ToolCallBlock rendering.
+   * parent ↔ child mapping the delegation row reads.
    */
   | {
       type: "delegation_started"
@@ -3244,7 +3278,7 @@ export type AcpEvent =
   /**
    * The child sub-session has finished (or errored / timed out / been
    * canceled). The MCP tool_result has been delivered to the parent agent;
-   * frontend updates the ToolCallBlock badge from "running" to ok/err.
+   * frontend settles the delegation row from "running" to ok/err.
    */
   | {
       type: "delegation_completed"
@@ -3755,6 +3789,9 @@ export interface LiveSessionSnapshot {
    *  watermarks included, so an attaching client seeds the same monotonic
    *  merge the live path applies. Absent while empty (the common case). */
   session_failures?: SessionFailureRecord[]
+  /** The connection's recent approval records, oldest first, one per tool
+   *  call. Absent while empty (the common case). */
+  tool_approvals?: ToolApprovalInfo[]
   /** AIR async tasks, merged. Terminal rows included: they carry the ids the
    *  subsequent live deltas revise, so a client seeded without them would
    *  re-create a settled task as a running one on its next correction. Absent
@@ -4648,6 +4685,10 @@ export interface FolderCommand {
   name: string
   command: string
   sort_order: number
+  /** Run by the desktop app on its own machine, detached, instead of in a
+   *  terminal on the folder's host. Absent from older servers' rows (then
+   *  treated as `false`). */
+  run_local?: boolean
   created_at: string
   updated_at: string
 }
